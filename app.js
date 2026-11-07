@@ -1,7 +1,7 @@
 'use strict';
 /* Isai: personal music and podcast player. All data stays on this device. */
 
-const VERSION = '1.7.0';
+const VERSION = '1.7.1';
 const DEFAULT_JAMENDO = '339d4597';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -293,48 +293,6 @@ const Player = {
 };
 function shuffleArr(a) { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
 
-const tail = $('#audio2');
-const Xfade = {
-  timer: null, url: null, startedFor: 0,
-  _sup: null,
-  supported() { if (this._sup == null) { try { const a = new Audio(); a.volume = 0.5; this._sup = Math.abs(a.volume - 0.5) < 0.01; } catch { this._sup = false; } } return this._sup; },
-  check() {
-    const secs = +S.settings.crossfade || 0;
-    if (!secs || this.timer || this.startedFor === Player.loadId || !this.supported()) return;
-    const p = Player.cur;
-    if (!p || !(p.type === 'song' || p.type === 'remote') || audio.paused) return;
-    if (Together.connected() || Player.repeat === 'one' || Player.sleepEnd || Player.sleepAt) return;
-    const nxt = Player.queue[Player.idx + 1] || (Player.repeat === 'all' && Player.queue.length > 1 ? Player.queue[0] : null);
-    if (!nxt || !(nxt.type === 'song' || nxt.type === 'remote')) return;
-    const d = audio.duration;
-    if (!isFinite(d) || d < secs * 2 + 5 || d - audio.currentTime > secs) return;
-    this.start(secs);
-  },
-  start(secs) {
-    this.startedFor = Player.loadId;
-    this.finish();
-    this.url = Player.objURL; Player.objURL = null;
-    tail.src = audio.currentSrc || audio.src;
-    tail.currentTime = audio.currentTime; tail.volume = 1;
-    tail.play().catch(() => { });
-    audio.volume = 0;
-    const t0 = Date.now(), dur = secs * 1000;
-    this.timer = setInterval(() => {
-      const k = Math.min(1, (Date.now() - t0) / dur);
-      tail.volume = Math.max(0, 1 - k); audio.volume = Math.min(1, k);
-      if (k >= 1) this.finish();
-    }, 100);
-    Player.next(true);
-  },
-  finish() {
-    if (this.timer) { clearInterval(this.timer); this.timer = null; }
-    audio.volume = 1;
-    try { tail.pause(); } catch { }
-    tail.removeAttribute('src'); try { tail.load(); } catch { }
-    if (this.url) { URL.revokeObjectURL(this.url); this.url = null; }
-  },
-};
-
 let lastSave = 0, lastProg = 0;
 function saveState() {
   KV.set('player', { queue: Player.queue.slice(0, 300), idx: Player.idx, context: Player.context, time: audio.currentTime || 0, shuffle: Player.shuffle, repeat: Player.repeat, speed: Player.speed }).catch(() => { });
@@ -348,7 +306,6 @@ function addRecent(p) {
 
 audio.addEventListener('timeupdate', () => {
   Stats.onTime();
-  Xfade.check();
   const p = Player.cur;
   updateProgressUI();
   const now = Date.now();
@@ -361,7 +318,7 @@ audio.addEventListener('timeupdate', () => {
   if (Player.sleepAt && now >= Player.sleepAt) { Player.sleepAt = 0; audio.pause(); toast('Sleep timer: paused'); updateSleepLabel(); }
 });
 audio.addEventListener('play', () => { if (Together.isSilent()) return; updatePlayerUI(); Together.localEvent(); });
-audio.addEventListener('pause', () => { if (Xfade.timer && !audio.ended) Xfade.finish(); if (Together.isSilent()) return; updatePlayerUI(); saveState(); Together.localEvent(); });
+audio.addEventListener('pause', () => { if (Together.isSilent()) return; updatePlayerUI(); saveState(); Together.localEvent(); });
 audio.addEventListener('seeked', () => Together.localEvent());
 audio.addEventListener('loadedmetadata', () => {
   updateProgressUI(); updateMediaSession();
@@ -1202,10 +1159,6 @@ Views.settings = async () => {
       <div class="field"><label for="s-relay">Podcast relay URL (optional)</label><input id="s-relay" value="${esc(S.settings.relay)}" placeholder="https://isai-relay.yourname.workers.dev" autocomplete="off" spellcheck="false" inputmode="url"></div>
       <button class="btn primary" type="submit">Save</button>
     </form>
-    <div class="section-title">Playback</div>
-    <div class="setting-row" style="flex-wrap:wrap;gap:10px"><span>Crossfade between songs</span>
-      <div class="chips" style="margin:0;padding:0">${[0, 3, 6, 9].map(n => `<button class="chip ${(+S.settings.crossfade || 0) === n ? 'on' : ''}" data-a="xfade" data-t="${n}">${n ? n + 's' : 'Off'}</button>`).join('')}</div></div>
-    ${Xfade.supported() ? '<p class="dim" style="font-size:12px">Fades are skipped during Listen together, so both phones stay in sync. The next song is always loaded early, so gaps stay short.</p>' : '<p class="dim" style="font-size:12px">iPhone doesn\'t let apps fade volume, so songs switch without a fade here. The next song is still loaded early to keep gaps short.</p>'}
     <div class="section-title">This phone</div>
     <div class="setting-row"><span>Name in Listen together</span><button class="acc" data-a="rename-phone">${esc(DeviceName.get())}</button></div>
     <div class="section-title">Google Drive</div>
@@ -1420,8 +1373,7 @@ const A = {
   libtab: d => { S.libTab = d.t; S.libFilter = ''; render(); },
   'lib-sort': d => { S.libSort = d.t; const b = $('#lib-body'); if (b) { S.lists = {}; b.innerHTML = libBodyHTML(); hydrateArt(b); markPlayingRows(); } },
   'stats-month': d => { S.statsMonth = d.t; rerenderKeepScroll(); },
-  'xfade': async d => { S.settings.crossfade = +d.t; await saveKV.settings(); rerenderKeepScroll(); },
-  podtab: d => { S.podTab = d.t; render(); },
+    podtab: d => { S.podTab = d.t; render(); },
   disctab: d => { S.discTab = d.t; render(); },
   discq: d => { const i = $('#dq'); if (i) i.value = d.q; runDiscover(d.q); },
   podq: d => { const i = $('#pq'); if (i) i.value = d.q; runPodSearch(d.q); },
@@ -2267,7 +2219,7 @@ async function backupNow() {
   const g = S.settings.gdrive;
   const data = {
     app: 'isai', kind: 'backup', v: 1, made: new Date().toISOString(), doc: localDoc(), progress: S.progress,
-    settings: { jamendo: S.settings.jamendo, relay: S.settings.relay, crossfade: S.settings.crossfade || 0, gdrive: g ? { email: g.email, folderId: g.folderId, folderName: g.folderName, hidden: g.hidden || [] } : null },
+    settings: { jamendo: S.settings.jamendo, relay: S.settings.relay, gdrive: g ? { email: g.email, folderId: g.folderId, folderName: g.folderName, hidden: g.hidden || [] } : null },
   };
   const name = `isai-backup-${new Date().toISOString().slice(0, 10)}.json`;
   const file = new File([JSON.stringify(data)], name, { type: 'application/json' });
@@ -2289,7 +2241,6 @@ async function restoreFrom(file) {
   await saveKV.progress();
   const st = data.settings || {};
   if (!S.settings.relay && st.relay) S.settings.relay = st.relay;
-  if (st.crossfade != null && S.settings.crossfade == null) S.settings.crossfade = st.crossfade;
   if (st.gdrive && S.settings.gdrive && S.settings.gdrive.email === st.gdrive.email && st.gdrive.hidden) S.settings.gdrive.hidden = [...new Set([...(S.settings.gdrive.hidden || []), ...st.gdrive.hidden])];
   await saveKV.settings();
   toast('Backup restored', 2500); Sync.soon(1000); rerenderKeepScroll();
