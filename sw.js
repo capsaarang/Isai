@@ -1,4 +1,4 @@
-const CACHE = 'isai-v1.0.1';
+const CACHE = 'isai-v1.0.2';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'vendor/jsmediatags.min.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => {

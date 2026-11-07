@@ -1,7 +1,7 @@
 'use strict';
 /* Isai: personal music and podcast player. All data stays on this device. */
 
-const VERSION = '1.0.1';
+const VERSION = '1.0.2';
 const DEFAULT_JAMENDO = '339d4597';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
