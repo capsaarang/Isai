@@ -1,7 +1,7 @@
 'use strict';
 /* Isai: personal music and podcast player. All data stays on this device. */
 
-const VERSION = '1.6.0';
+const VERSION = '1.6.1';
 const DEFAULT_JAMENDO = '339d4597';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -1529,11 +1529,11 @@ const A = {
   'drive-scan': () => { if (!Drive.connected()) return Drive.connect('setup'); if (!S.settings.gdrive.folderId) return driveFolderSheet(); driveScan(); },
   'drive-folder': () => driveFolderSheet(),
   'drive-disconnect': async () => {
-    if (!confirm('Disconnect Google Drive? Drive songs disappear from Isai on this phone, except ones saved offline. Nothing in your Drive changes.')) return;
+    if (!confirm('Disconnect Google Drive? Drive songs leave Isai on this phone, but your likes, playlists, and stats are kept. When you connect a Drive with the same songs, they come back. Nothing in your Drive changes.')) return;
     const t = Drive.token();
     if (t) fetch('https://oauth2.googleapis.com/revoke?token=' + encodeURIComponent(t), { method: 'POST' }).catch(() => { });
-    Drive.clearToken(); Drive.readyClear();
-    for (const tr of S.tracks.filter(x => x.source === 'gdrive' && !x.offline)) await deleteTrack(tr.id);
+    Drive.clearToken();
+    await forgetOldDrive();
     S.settings.gdrive = null; await saveKV.settings();
     toast('Google Drive disconnected'); rerenderKeepScroll();
   },
@@ -1817,7 +1817,13 @@ async function runDrivePending() {
   if (what === 'denied') { toast("Google Drive wasn't connected", 3000); return; }
   try {
     const me = await Drive.api('about', { fields: 'user(emailAddress,displayName)' });
-    S.settings.gdrive = Object.assign({}, S.settings.gdrive || {}, { email: me.user && me.user.emailAddress });
+    const email = me.user && me.user.emailAddress;
+    const prev = S.settings.gdrive;
+    if (prev && prev.email && email && prev.email !== email) {
+      await forgetOldDrive();
+      S.settings.gdrive = { email };
+      toast(`Switched to ${email}`, 2000);
+    } else S.settings.gdrive = Object.assign({}, prev || {}, { email });
     await saveKV.settings();
     if (what === 'play') { toast('Google Drive reconnected. Tap play to continue.', 3000); return; }
     if (what === 'sync') { const ok = await Sync.run(); toast(ok ? 'Sync is on' : "Couldn't turn on sync. Try again.", 2500); rerenderKeepScroll(); return; }
@@ -1891,8 +1897,9 @@ async function driveScan(quiet = false) {
       if (i % 10 === 9) await sleep(0);
     }
     g.lastScan = Date.now(); await saveKV.settings();
-    if (added) Sync.soon(1000);
-    if (!quiet || added || removed) toast(added || removed ? `Google Drive: ${added} added${removed ? `, ${removed} removed` : ''}` : 'Google Drive is up to date', 3000);
+    let moved = 0;
+    if (added) { moved = await carryOver(); Sync.soon(1000); }
+    if (!quiet || added || removed) toast(added || removed ? `Google Drive: ${added} added${removed ? `, ${removed} removed` : ''}${moved ? `. Likes, playlists, and stats carried over for ${moved} song${moved === 1 ? '' : 's'}` : ''}` : 'Google Drive is up to date', moved ? 4500 : 3000);
   } catch (e) {
     if (quiet) { if (added) toast(`Google Drive: ${added} added`, 2500); }
     else if (e.message === 'gdrive-auth') { toast('', 1); driveAuthSheet('scan'); }
@@ -2130,6 +2137,72 @@ const Sync = {
     }
   },
 };
+
+/* ---------- carry over when the Drive account changes ---------- */
+const normTxt = s => String(s || '').toLowerCase().normalize('NFKD').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+async function rememberDriveSongs() {
+  // Called before switching accounts: remember each Drive song's title and artist so likes,
+  // playlists, and stats can be moved to the same song in the new Drive.
+  const legacy = S.meta.legacy = S.meta.legacy || {};
+  for (const t of S.tracks) if (t.source === 'gdrive') legacy[songKeyOf(t)] = { title: t.title, artist: t.artist, at: Date.now() };
+  await saveMeta();
+}
+async function forgetOldDrive() {
+  await rememberDriveSongs();
+  Drive.readyClear(); Sync.fileId = null;
+  for (const tr of S.tracks.filter(x => x.source === 'gdrive')) await deleteTrack(tr.id);
+}
+async function carryOver() {
+  const legacy = S.meta.legacy || {};
+  const olds = Object.keys(legacy);
+  if (!olds.length) return 0;
+  const byTA = new Map(), byT = new Map();
+  for (const t of S.tracks) if (t.source === 'gdrive') {
+    byTA.set(normTxt(t.title) + '|' + normTxt(t.artist), t);
+    const k = normTxt(t.title); byT.set(k, byT.has(k) ? null : t);
+  }
+  const map = {};
+  for (const ok of olds) {
+    const L = legacy[ok];
+    const hit = byTA.get(normTxt(L.title) + '|' + normTxt(L.artist)) || byT.get(normTxt(L.title));
+    if (hit) map[ok] = songKeyOf(hit);
+  }
+  const moved = Object.keys(map);
+  if (!moved.length) return 0;
+  // likes
+  const liked = S.meta.liked = S.meta.liked || {};
+  for (const ok of moved) if (liked[ok]) { const nk = map[ok]; if (!liked[nk] || (liked[ok].at || 0) > (liked[nk].at || 0)) liked[nk] = Object.assign({}, liked[ok]); }
+  const km = keyMap();
+  S.liked = new Set(Object.entries(liked).filter(([, v]) => v.on).map(([k]) => km.get(k)).filter(Boolean));
+  // playlists
+  for (const pl of S.playlists) {
+    let changed = false;
+    pl.extraKeys = (pl.extraKeys || []).filter(k => {
+      if (!map[k]) return true;
+      const id = km.get(map[k]); if (id && !pl.ids.includes(id)) pl.ids.push(id);
+      changed = true; return false;
+    });
+    if (changed) pl.updatedAt = Date.now();
+  }
+  // play counts and monthly stats
+  const moveCounts = obj => {
+    for (const ok of moved) if (obj[ok]) {
+      const nk = map[ok], o = obj[ok];
+      if (typeof o === 'number') obj[nk] = (obj[nk] || 0) + o;
+      else { const n = obj[nk] = obj[nk] || { n: 0, last: 0, title: o.title, artist: o.artist }; n.n += o.n || 0; n.last = Math.max(n.last || 0, o.last || 0); }
+      delete obj[ok];
+    }
+  };
+  moveCounts(S.plays);
+  for (const m of Object.values(S.stats)) moveCounts(m.songs || {});
+  for (const d of Object.values(S.others || {})) { moveCounts(d.plays || {}); for (const m of Object.values(d.stats || {})) moveCounts(m.songs || {}); }
+  // recently played
+  S.recent = S.recent.map(p => { if (p.type !== 'song' || !map[p.sk]) return p; const id = km.get(map[p.sk]); return id ? Object.assign(songP(trackById(id)), { at: p.at, sk: map[p.sk] }) : p; });
+  for (const ok of moved) delete legacy[ok];
+  await Promise.all([saveMeta(), saveKV.liked(), saveKV.playlists(), saveKV.recent(), KV.set('plays', S.plays), KV.set('stats', S.stats), KV.set('others', S.others)]);
+  Sync.soon(1000);
+  return moved.length;
+}
 
 /* ---------- backup and restore ---------- */
 async function backupNow() {
