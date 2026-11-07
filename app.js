@@ -1,7 +1,7 @@
 'use strict';
 /* Isai: personal music and podcast player. All data stays on this device. */
 
-const VERSION = '1.0.0';
+const VERSION = '1.0.1';
 const DEFAULT_JAMENDO = '339d4597';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -739,8 +739,32 @@ async function runPodSearch(q) {
   }
 }
 
-async function loadFeed(feedUrl) {
-  const xml = await fetchVia(feedUrl, 'text');
+async function loadItunes(itunesId, feedUrl) {
+  const data = await getJSON(`https://itunes.apple.com/lookup?id=${encodeURIComponent(itunesId)}&media=podcast&entity=podcastEpisode&limit=200`);
+  const res = data.results || [];
+  const show = res.find(r => r.wrapperType === 'track' && r.kind === 'podcast') || {};
+  const pod = {
+    id: hash(feedUrl), feedUrl, itunesId,
+    title: show.collectionName || 'Podcast', author: show.artistName || '',
+    art: show.artworkUrl600 || show.artworkUrl100 || '', desc: '', fetchedAt: Date.now(), episodes: [],
+  };
+  for (const e of res) {
+    if (e.kind !== 'podcast-episode' || !e.episodeUrl) continue;
+    const d = Date.parse(e.releaseDate);
+    pod.episodes.push({
+      id: hash(feedUrl + '|' + (e.episodeGuid || e.episodeUrl)), title: e.trackName || 'Episode', url: e.episodeUrl,
+      pubDate: isNaN(d) ? 0 : d, duration: e.trackTimeMillis ? e.trackTimeMillis / 1000 : 0,
+      image: e.artworkUrl600 || '', desc: stripHtml(e.description || e.shortDescription || '').slice(0, 4000),
+    });
+  }
+  pod.episodes.sort((a, b) => b.pubDate - a.pubDate);
+  if (!pod.episodes.length) throw new Error('relay-needed');
+  return pod;
+}
+async function loadFeed(feedUrl, itunesId) {
+  let xml;
+  try { xml = await fetchVia(feedUrl, 'text'); }
+  catch (e) { if (itunesId) return loadItunes(itunesId, feedUrl); throw e; }
   const doc = new DOMParser().parseFromString(xml, 'text/xml');
   const ch = doc.querySelector('channel');
   if (!ch) throw new Error('Not a podcast feed');
@@ -771,6 +795,7 @@ async function loadFeed(feedUrl) {
     });
   }
   pod.episodes.sort((a, b) => b.pubDate - a.pubDate);
+  if (itunesId) pod.itunesId = itunesId;
   return pod;
 }
 function feedErrorHTML(e) {
@@ -783,7 +808,7 @@ Views.show = async id => {
   if (!pod) return topbar('', { back: true }) + emptyHTML('mic', 'Show not found', '');
   const subbed = S.podcasts.some(p => p.id === id);
   if (!pod.episodes || !pod.episodes.length) {
-    try { const fresh = await loadFeed(pod.feedUrl); if (!fresh.art) fresh.art = pod.art; S.feedCache[id] = fresh; pod = fresh; }
+    try { const fresh = await loadFeed(pod.feedUrl, pod.itunesId); if (!fresh.art) fresh.art = pod.art; S.feedCache[id] = fresh; pod = fresh; }
     catch (e) { return topbar('', { back: true }) + heroHTML({ title: pod.title, artUrl: pod.art }, pod.title, pod.author || '') + feedErrorHTML(e); }
   }
   const items = pod.episodes.map(e => epP(e, pod));
@@ -804,9 +829,9 @@ async function refreshPodcasts(force) {
   let changed = 0;
   for (const p of stale) {
     try {
-      const fresh = await loadFeed(p.feedUrl);
+      const fresh = await loadFeed(p.feedUrl, p.itunesId);
       const before = p.episodes[0]?.id;
-      Object.assign(p, { title: fresh.title, author: fresh.author, art: fresh.art || p.art, desc: fresh.desc, episodes: fresh.episodes, fetchedAt: Date.now() });
+      Object.assign(p, { itunesId: fresh.itunesId || p.itunesId, title: fresh.title, author: fresh.author, art: fresh.art || p.art, desc: fresh.desc, episodes: fresh.episodes, fetchedAt: Date.now() });
       if (fresh.episodes[0]?.id !== before) changed++;
     } catch { }
   }
@@ -921,7 +946,7 @@ async function discJamendo(q) {
   if (!items.length) return emptyHTML('compass', 'Nothing found', 'Try another word or mood.');
   return `<div class="section-title">${q ? 'Results' : 'Popular this month'}</div>` + rowsHTML(items, q || 'Jamendo', { dur: true });
 }
-const IA_FILTER = '(collection:netlabels OR collection:etree OR licenseurl:*creativecommons* OR licenseurl:*publicdomain*)';
+const IA_FILTER = '(collection:netlabels OR collection:etree OR (collection:audio_music AND (licenseurl:*creativecommons* OR licenseurl:*publicdomain*)))';
 async function discArchive(q) {
   const query = `${q ? '(' + q + ') AND ' : ''}mediatype:audio AND ${IA_FILTER}`;
   const url = 'https://archive.org/advancedsearch.php?q=' + encodeURIComponent(query) +
@@ -1166,12 +1191,12 @@ const A = {
   'pod-open': d => {
     const r = S.podResults[+d.i]; if (!r) return;
     const id = hash(r.feedUrl);
-    if (!S.podcasts.some(p => p.id === id)) S.feedCache[id] = { id, feedUrl: r.feedUrl, title: r.collectionName, author: r.artistName, art: r.artworkUrl600 || r.artworkUrl100, episodes: [] };
+    if (!S.podcasts.some(p => p.id === id)) S.feedCache[id] = { id, feedUrl: r.feedUrl, itunesId: r.collectionId, title: r.collectionName, author: r.artistName, art: r.artworkUrl600 || r.artworkUrl100, episodes: [] };
     go('show', id);
   },
   sub: async d => {
     const pod = S.feedCache[d.p]; if (!pod) return;
-    if (!pod.episodes.length) { try { Object.assign(pod, await loadFeed(pod.feedUrl)); } catch { toast("Couldn't load this show"); return; } }
+    if (!pod.episodes.length) { try { Object.assign(pod, await loadFeed(pod.feedUrl, pod.itunesId)); } catch { toast("Couldn't load this show"); return; } }
     pod.fetchedAt = Date.now();
     S.podcasts.push(pod); await saveKV.podcasts(); toast('Following ' + pod.title); rerenderKeepScroll();
   },
