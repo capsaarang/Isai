@@ -1,7 +1,7 @@
 'use strict';
 /* Isai: personal music and podcast player. All data stays on this device. */
 
-const VERSION = '1.7.3';
+const VERSION = '1.8.0';
 const DEFAULT_JAMENDO = '339d4597';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -306,6 +306,7 @@ function addRecent(p) {
 
 audio.addEventListener('timeupdate', () => {
   Stats.onTime();
+  Lyrics.tick();
   const p = Player.cur;
   updateProgressUI();
   const now = Date.now();
@@ -409,6 +410,7 @@ function updatePlayerUI() {
   }
   hydrateArt($('#mini')); hydrateArt($('#np'));
   updateProgressUI(); updateSleepLabel();
+  Lyrics.onTrack();
 }
 let seeking = false;
 function updateProgressUI() {
@@ -627,6 +629,7 @@ Views.home = () => {
     `<button class="tile" data-a="go" data-v="downloads">${artHTML({ title: 'Downloads' }, '', 52, 'download').replace(/background:[^;]+;color:[^;]+/, 'background:#85B7EB;color:#042C53')}<span class="ellipsis">Downloads</span></button>`];
   for (const pl of S.playlists.slice(0, 6)) tiles.push(`<button class="tile" data-a="go" data-v="playlist" data-p="${esc(pl.id)}">${artHTML(plCover(pl), '', 52)}<span class="ellipsis">${esc(pl.name)}</span></button>`);
   h += `<div class="tiles">${tiles.join('')}</div>`;
+  for (const m of recapReady()) h += `<button class="recap-cta" data-a="go" data-v="recap" data-p="${esc(m)}">${icon('chart', 'sm')}<span>Your ${esc(recapLabel(m))} recap is ready</span></button>`;
 
   const cont = continueEpisodes().slice(0, 3);
   if (cont.length) h += `<div class="section-title">Continue listening</div>` + epRowsHTML(cont, 'Continue listening');
@@ -803,6 +806,7 @@ Views.stats = () => {
   h += `<div class="chips">${[...opts, 'year'].map(m => `<button class="chip ${sel === m ? 'on' : ''}" data-a="stats-month" data-t="${m}">${m === cur ? 'This month' : esc(label(m))}</button>`).join('')}</div>`;
   const st = Stats.month(sel), tp = Stats.totalPlays();
   const mins = Math.round(st.secs / 60);
+  if (Object.keys(st.songs).length) h += `<button class="recap-cta" data-a="go" data-v="recap" data-p="${esc(sel)}">${icon('play', 'sm')}<span>See your ${esc(sel === 'year' ? `${new Date().getFullYear()} so far` : label(sel))} recap</span></button>`;
   const songs = Object.entries(st.songs).sort((a, b) => b[1] - a[1]).slice(0, 10);
   const artists = Object.entries(st.artists).sort((a, b) => b[1] - a[1]).slice(0, 10);
   const plays = Object.values(st.songs).reduce((a, b) => a + b, 0);
@@ -821,6 +825,65 @@ Views.stats = () => {
   }).join('') + `</div>`;
   h += `<div class="section-title">Top artists</div><div class="list">` + artists.map(([a, n], i) => `<button class="row" data-a="go" data-v="artist" data-p="${esc(a)}"><span class="rank">${i + 1}</span>${artHTML({ title: a }, '', 46).replace('class="art ', 'style="width:46px;height:46px;border-radius:50%" class="art ')}<div class="meta"><div class="t ellipsis">${esc(a)}</div></div><span class="muted plays">${n} play${n === 1 ? '' : 's'}</span></button>`).join('') + `</div>`;
   if (Object.keys(S.others || {}).length) h += `<p class="dim" style="font-size:12px;margin-top:16px">Includes listening from both phones.</p>`;
+  return h;
+};
+/* ----- Recap: swipeable cards for a month or a year ----- */
+const recapLabel = m => m === 'year' ? String(new Date().getFullYear()) : /^y:/.test(m) ? m.slice(2) : new Date(m + '-15').toLocaleDateString(undefined, { month: 'long', year: m.slice(0, 4) === String(new Date().getFullYear()) ? undefined : 'numeric' });
+function recapReady() {
+  // which recap Home should point to: last month during the first week, last year in the first half of January
+  const now = new Date(), out = [];
+  if (now.getMonth() === 0 && now.getDate() <= 14) { const y = 'y:' + (now.getFullYear() - 1); if (Object.keys(Stats.month(y).songs).length >= 5) out.push(y); }
+  if (now.getDate() <= 7) { const prev = monthKey(new Date(now.getFullYear(), now.getMonth() - 1, 15)); if (Object.keys(Stats.month(prev).songs).length >= 3) out.push(prev); }
+  return out;
+}
+Views.recap = m => {
+  m = typeof m === 'string' && m ? m : monthKey();
+  const isYear = m === 'year' || /^y:/.test(m), name = recapLabel(m);
+  const st = Stats.month(m), tp = Stats.totalPlays(), km = keyMap();
+  let h = topbar('', { back: true });
+  const songs = Object.entries(st.songs).sort((a, b) => b[1] - a[1]);
+  if (!songs.length) return h + emptyHTML('chart', 'No recap yet', `Play some music and your ${esc(name)} recap fills in.`);
+  const mins = Math.round(st.secs / 60), plays = songs.reduce((a, [, n]) => a + n, 0);
+  const artists = Object.entries(st.artists).sort((a, b) => b[1] - a[1]);
+  const songInfo = ([k, n]) => { const id = km.get(k), t = id && trackById(id), meta = tp[k] || {}; return { k, n, p: t ? songP(t) : null, title: t ? t.title : meta.title || 'Song', artist: t ? t.artist : meta.artist || '' }; };
+  const top = songs.slice(0, 5).map(songInfo);
+  const playable = top.filter(x => x.p).map(x => x.p);
+  const L = reg(playable, `Your ${name} top songs`);
+  const hueBase = (parseInt(m.replace(/\D/g, '').slice(-2)) || 7) * 29;
+  const card = (i, inner) => `<section class="recap-card" style="--h:${(hueBase + i * 47) % 360}">${inner}</section>`;
+  const cards = [];
+  // 1. minutes
+  let cmp = '';
+  if (!isYear) {
+    const d = new Date(m + '-15'); const prev = Stats.month(monthKey(new Date(d.getFullYear(), d.getMonth() - 1, 15)));
+    if (prev.secs > 600) { const pct = Math.round((st.secs - prev.secs) / prev.secs * 100); cmp = pct === 0 ? 'Same as the month before.' : `${Math.abs(pct)}% ${pct > 0 ? 'more' : 'less'} than the month before.`; }
+  }
+  cards.push(card(0, `<div class="rc-kicker">Your ${esc(name)}</div><div class="rc-big">${mins < 1 ? '&lt;1' : mins.toLocaleString()}</div><div class="rc-label">minutes of music</div>${mins >= 120 ? `<div class="rc-note">That's about ${Math.round(mins / 60)} hours.</div>` : ''}${cmp ? `<div class="rc-note">${cmp}</div>` : ''}`));
+  // 2. top song
+  const s1 = top[0];
+  cards.push(card(1, `<div class="rc-kicker">Your top song</div>${artHTML(s1.p || { title: s1.title }, 'rc-art', 220)}<div class="rc-title">${esc(s1.title)}</div><div class="rc-sub">${esc(s1.artist)}</div><div class="rc-note">Played ${s1.n} time${s1.n === 1 ? '' : 's'}</div>${s1.p ? `<button class="btn primary small" data-a="play" data-l="${L}" data-i="${playable.indexOf(s1.p)}">${icon('play', 'sm')} Play it</button>` : ''}`));
+  // 3. top artists
+  const [a1, ...aRest] = artists.slice(0, 5);
+  cards.push(card(2, `<div class="rc-kicker">Your top artist</div>${artHTML({ title: a1[0] }, 'rc-art round', 180)}<div class="rc-title">${esc(a1[0])}</div><div class="rc-note">${a1[1]} play${a1[1] === 1 ? '' : 's'}</div>${aRest.length ? `<ol class="rc-list" start="2">${aRest.map(([a, n]) => `<li><span class="ellipsis">${esc(a)}</span><span>${n}</span></li>`).join('')}</ol>` : ''}`));
+  // 4. top songs
+  if (top.length > 1) cards.push(card(3, `<div class="rc-kicker">Your top songs</div><ol class="rc-list big">${top.map(x => `<li><span class="ellipsis"><b>${esc(x.title)}</b><br><small>${esc(x.artist)}</small></span><span>${x.n}</span></li>`).join('')}</ol>${playable.length ? `<button class="btn primary small" data-a="play" data-l="${L}" data-i="0">${icon('play', 'sm')} Play your top songs</button>` : ''}`));
+  // 5. busiest day (month) or top month (year)
+  if (isYear) {
+    const y = m === 'year' ? String(new Date().getFullYear()) : m.slice(2);
+    const ms = Stats.months().filter(x => x.startsWith(y + '-')).map(x => [x, Stats.month(x).secs]).sort((a, b) => b[1] - a[1]);
+    if (ms.length && ms[0][1] > 0) cards.push(card(4, `<div class="rc-kicker">Your biggest month</div><div class="rc-title big">${esc(new Date(ms[0][0] + '-15').toLocaleDateString(undefined, { month: 'long' }))}</div><div class="rc-note">${Math.round(ms[0][1] / 60).toLocaleString()} minutes</div>`));
+  } else {
+    const dd = Object.entries(st.days || {}).sort((a, b) => b[1] - a[1])[0];
+    if (dd && dd[1] > 60) { const day = new Date(+m.slice(0, 4), +m.slice(5, 7) - 1, +dd[0]); cards.push(card(4, `<div class="rc-kicker">Your biggest day</div><div class="rc-title big">${esc(day.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' }))}</div><div class="rc-note">${Math.round(dd[1] / 60).toLocaleString()} minutes of music</div>`)); }
+  }
+  // 6. totals
+  cards.push(card(5, `<div class="rc-kicker">${esc(name)} in numbers</div><div class="rc-grid"><div><b>${plays.toLocaleString()}</b><span>plays</span></div><div><b>${songs.length.toLocaleString()}</b><span>different songs</span></div><div><b>${artists.length.toLocaleString()}</b><span>artists</span></div><div><b>${mins.toLocaleString()}</b><span>minutes</span></div></div>${Object.keys(S.others || {}).length ? '<div class="rc-note">Includes listening from both phones.</div>' : ''}`));
+  h += `<div class="recap" id="recap">${cards.join('')}</div><div class="recap-dots">${cards.map((_, i) => `<span class="${i ? '' : 'on'}"></span>`).join('')}</div>`;
+  setTimeout(() => {
+    const el = $('#recap'); if (!el) return;
+    hydrateArt(el);
+    el.addEventListener('scroll', () => { const i = Math.round(el.scrollLeft / el.clientWidth); document.querySelectorAll('.recap-dots span').forEach((d, k) => d.classList.toggle('on', k === i)); }, { passive: true });
+  }, 0);
   return h;
 };
 Views.downloads = () => {
@@ -1564,6 +1627,9 @@ $('#np-like').addEventListener('click', likeAction);
 $('#np-close').addEventListener('click', () => closeTop());
 $('#np-more').addEventListener('click', () => { if (Player.cur) itemSheet(Player.cur); });
 $('#np-queue').addEventListener('click', queueSheet);
+$('#np-lyrics-btn').addEventListener('click', () => Lyrics.toggle());
+$('#np-lyrics').addEventListener('click', e => { const b = e.target.closest('.lyr-line'); if (b && Lyrics.lines) { const l = Lyrics.lines[+b.dataset.i]; if (l) { audio.currentTime = l.t; Lyrics.userAt = 0; Lyrics.tick(true); } } else if (e.target.closest('[data-lyr="retry"]')) Lyrics.show(true); });
+['touchstart', 'wheel'].forEach(ev => $('#np-lyrics').addEventListener(ev, () => { Lyrics.userAt = Date.now(); }, { passive: true }));
 $('#np-together').addEventListener('click', togetherSheet);
 $('#np-sleep').addEventListener('click', sleepSheet);
 $('#np-add').addEventListener('click', () => {
@@ -1968,6 +2034,7 @@ const Stats = {
         const m = monthKey();
         const st = S.stats[m] = S.stats[m] || { songs: {}, artists: {}, secs: 0 };
         st.secs += d;
+        const day = new Date().getDate(); st.days = st.days || {}; st.days[day] = (st.days[day] || 0) + d;
         if (!this.cur.counted && (this.cur.secs >= 30 || (isFinite(audio.duration) && audio.duration > 0 && this.cur.secs >= audio.duration * 0.5))) {
           this.cur.counted = true;
           const pl = S.plays[k] = S.plays[k] || { n: 0, last: 0 };
@@ -1996,14 +2063,15 @@ const Stats = {
     return out;
   },
   month(m) {
-    const out = { songs: {}, artists: {}, secs: 0 };
+    const out = { songs: {}, artists: {}, secs: 0, days: {} };
     const add = st => {
       if (!st) return;
       out.secs += st.secs || 0;
+      for (const [k, v] of Object.entries(st.days || {})) out.days[k] = (out.days[k] || 0) + v;
       for (const [k, v] of Object.entries(st.songs || {})) out.songs[k] = (out.songs[k] || 0) + v;
       for (const [k, v] of Object.entries(st.artists || {})) out.artists[k] = (out.artists[k] || 0) + v;
     };
-    if (m === 'year') { const y = String(new Date().getFullYear()); for (const mm of this.months().filter(x => x.startsWith(y))) { const r = this.month(mm); add(r); } return out; }
+    if (m === 'year' || /^y:\d{4}$/.test(m)) { const y = m === 'year' ? String(new Date().getFullYear()) : m.slice(2); out.days = {}; for (const mm of this.months().filter(x => x.startsWith(y + '-'))) { const r = this.month(mm); r.days = {}; add(r); } return out; }
     add(S.stats[m]); for (const d of Object.values(S.others || {})) add((d.stats || {})[m]);
     return out;
   },
@@ -2011,6 +2079,108 @@ const Stats = {
     const set = new Set(Object.keys(S.stats));
     for (const d of Object.values(S.others || {})) Object.keys(d.stats || {}).forEach(m => set.add(m));
     return [...set].sort().reverse();
+  },
+};
+
+/* ---------- lyrics: from the song file, or a matching .lrc file next to the song in Drive ---------- */
+function parseLRC(text) {
+  let offset = 0; const out = [];
+  for (const raw of String(text || '').replace(/\r/g, '').split('\n')) {
+    const off = raw.match(/^\s*\[offset:\s*([+-]?\d+)\s*\]/i); if (off) { offset = +off[1] / 1000; continue; }
+    const stamps = [...raw.matchAll(/\[(\d{1,3}):(\d{1,2}(?:[.:]\d{1,3})?)\]/g)];
+    if (!stamps.length) continue;
+    const words = raw.replace(/\[[^\]]*\]/g, '').replace(/<\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?>/g, '').trim();
+    for (const m of stamps) out.push({ t: (+m[1]) * 60 + parseFloat(m[2].replace(':', '.')), text: words });
+  }
+  out.sort((a, b) => a.t - b.t);
+  for (const l of out) l.t = Math.max(0, l.t - offset);
+  return out.length >= 3 ? out : null;
+}
+const Lyrics = {
+  on: false, key: null, data: null, lines: null, active: -1, userAt: 0, loadId: 0,
+  fits(p) { return !!(p && p.type === 'song' && trackById(p.id)); },
+  cacheKey(t) { return 'lyr:' + songKeyOf(t); },
+  toggle() {
+    this.on = !this.on;
+    $('#np').classList.toggle('lyr-on', this.on);
+    $('#np-lyrics-btn').classList.toggle('on', this.on);
+    if (this.on) this.show(); else this.key = null;
+  },
+  onTrack() {
+    const p = Player.cur, ok = this.fits(p);
+    $('#np-lyrics-btn').classList.toggle('hidden', !ok);
+    if (!ok && this.on) this.toggle();
+    if (this.on && p && pKey(p) !== this.key) this.show();
+  },
+  async show(force = false) {
+    const p = Player.cur, box = $('#np-lyrics'); if (!p || !box) return;
+    const t = trackById(p.id); if (!t) return;
+    const id = ++this.loadId; this.key = pKey(p); this.lines = null; this.active = -1;
+    box.scrollTop = 0;
+    box.innerHTML = '<div class="lyr-msg">Looking for lyrics…</div>';
+    let d = null;
+    try { d = await this.get(t, force); } catch (e) { d = { err: e.message }; }
+    if (id !== this.loadId) return;
+    this.data = d;
+    if (d && d.lrc) {
+      this.lines = parseLRC(d.lrc);
+      if (this.lines) {
+        box.innerHTML = '<div class="lyr-pad"></div>' + this.lines.map((l, i) => `<button class="lyr-line" data-i="${i}">${esc(l.text) || '♪'}</button>`).join('') + '<div class="lyr-pad"></div>';
+        this.tick(true); return;
+      }
+    }
+    const plain = d && (d.plain || (d.lrc && d.lrc.replace(/\[[^\]]*\]/g, '').trim()));
+    if (plain) { box.innerHTML = `<div class="lyr-plain">${esc(plain)}</div>`; return; }
+    const why = d && d.err === 'gdrive-auth' ? 'Google needs to reconnect before Isai can look in your Drive.'
+      : d && d.err ? (navigator.onLine ? "Couldn't reach Google Drive just now." : "You're offline, so Isai can't look in your Drive right now.")
+      : `This song has no lyrics saved in it.${t.source === 'gdrive' ? ` To add some, put a file called <b>${esc((d && d.base) || 'song name')}.lrc</b> in the same Drive folder as the song.` : ''}`;
+    box.innerHTML = `<div class="lyr-msg">${icon('lyrics', 'xl')}<div class="lyr-empty-t">No lyrics yet</div><div class="lyr-empty-s">${why}</div><button class="btn small ghost" data-lyr="retry">Check again</button></div>`;
+  },
+  async get(t, force) {
+    const ck = this.cacheKey(t);
+    const cached = await KV.get(ck).catch(() => null);
+    if (cached && !force && (cached.lrc || cached.plain || Date.now() - (cached.at || 0) < 6 * 3600e3)) return cached;
+    const out = { at: Date.now() };
+    // 1. a matching .lrc file in the same Drive folder
+    if (t.source === 'gdrive' && Drive.token() && navigator.onLine) {
+      const meta = await Drive.api('files/' + encodeURIComponent(t.driveId), { fields: 'name,parents' });
+      const base = out.base = (meta.name || '').replace(/\.[^.]+$/, '');
+      const parent = (meta.parents || [])[0];
+      if (base) {
+        const q = `name contains '${Drive.qEsc(base)}' and trashed=false` + (parent ? ` and '${Drive.qEsc(parent)}' in parents` : '');
+        const r = await Drive.api('files', { q, fields: 'files(id,name)', pageSize: '20', spaces: 'drive' });
+        const f = (r.files || []).find(f => f.name.toLowerCase() === base.toLowerCase() + '.lrc');
+        if (f) { out.lrc = await (await Drive.fileBlob(f.id)).text(); out.src = 'lrc'; }
+      }
+    }
+    // 2. lyrics stored inside the song file
+    if (!out.lrc) {
+      let tags = null;
+      const blob = await DB.get('blobs', t.id).catch(() => null) || (t.source === 'gdrive' ? await Drive.readyGet(t) : null);
+      if (blob) tags = await readTags(new File([blob], 'x', { type: blob.type || t.mime || 'audio/mpeg' }));
+      else if (t.source === 'gdrive' && Drive.token() && navigator.onLine) tags = await readDriveTags(t);
+      else if (t.source === 'gdrive' && !cached) throw new Error(Drive.token() ? 'offline' : 'gdrive-auth');
+      const raw = tags && (tags.lyrics || (tags.USLT && tags.USLT.data) || (tags['©lyr'] && tags['©lyr'].data));
+      const txt = String((raw && typeof raw === 'object' ? raw.lyrics || raw.text : raw) || '').replace(/\r/g, '').trim();
+      if (txt) { if (parseLRC(txt)) out.lrc = txt; else out.plain = txt; out.src = 'tag'; }
+    }
+    await KV.set(ck, out).catch(() => { });
+    return out;
+  },
+  tick(jump = false) {
+    if (!this.on || !this.lines) return;
+    const t = audio.currentTime + 0.25;
+    let i = -1; for (let k = 0; k < this.lines.length && this.lines[k].t <= t; k++) i = k;
+    if (i === this.active && !jump) return;
+    const box = $('#np-lyrics');
+    box.querySelector('.lyr-line.cur')?.classList.remove('cur');
+    this.active = i;
+    const el = i >= 0 ? box.querySelector(`.lyr-line[data-i="${i}"]`) : null;
+    if (el) el.classList.add('cur');
+    if (Date.now() - this.userAt > 3500) {
+      const target = el || box.querySelector('.lyr-line');
+      if (target) box.scrollTo({ top: target.offsetTop - box.clientHeight * 0.38, behavior: jump ? 'auto' : 'smooth' });
+    }
   },
 };
 

@@ -130,7 +130,7 @@ img{display:block}
 .controls .ctl .badge{position:absolute;font-size:9px;font-weight:700;top:9px;right:9px}
 .speed{border:1.5px solid currentColor;border-radius:12px;padding:2px 8px;font-size:13px;font-weight:700}
 .np-bottom{display:flex;justify-content:space-between;max-width:520px;width:100%;margin:auto auto 0;padding-top:16px}
-.np-bottom button{display:flex;align-items:center;gap:6px;font-size:13px;color:#e8dccb;padding:8px}
+.np-bottom button{display:flex;align-items:center;gap:5px;font-size:12.5px;color:#e8dccb;padding:8px 4px}
 input[type=range]{-webkit-appearance:none;appearance:none;height:20px;background:transparent}
 input[type=range]::-webkit-slider-runnable-track{height:4px;border-radius:2px;background:linear-gradient(to right,#fff var(--p,0%),rgba(255,255,255,.25) var(--p,0%))}
 input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:#fff;margin-top:-5px}
@@ -208,3 +208,49 @@ body.together-on #view{padding-top:64px}
 .plays{font-size:12px;flex-shrink:0;padding-left:6px}
 
 .enrich-line{font-size:12px;margin:-4px 0 8px;color:var(--acc)}
+
+/* lyrics */
+#np-lyrics{display:none;flex:1;min-height:0;overflow-y:auto;width:100%;max-width:520px;margin:4px auto 16px;scrollbar-width:none;-webkit-mask-image:linear-gradient(transparent,#000 12%,#000 85%,transparent);mask-image:linear-gradient(transparent,#000 12%,#000 85%,transparent)}
+#np-lyrics::-webkit-scrollbar{display:none}
+#np.lyr-on #np-lyrics{display:block}
+#np.lyr-on .np-art{display:none}
+.lyr-pad{height:30%}
+.lyr-line{display:block;width:100%;text-align:left;font-size:22px;line-height:1.3;font-weight:700;color:rgba(255,255,255,.38);padding:7px 0;transition:color .25s}
+.lyr-line.cur{color:#fff}
+.lyr-plain{white-space:pre-wrap;font-size:18px;line-height:1.55;font-weight:600;color:#f1e7d8;padding:48px 0 60px}
+.lyr-msg{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;text-align:center;min-height:100%;color:#e8dccb;padding:24px 8px}
+.lyr-msg .icon.xl{width:44px;height:44px;opacity:.7}
+.lyr-empty-t{font-size:18px;font-weight:700}
+.lyr-empty-s{font-size:14px;color:#cbbba5;max-width:320px;line-height:1.45}
+#np-lyrics-btn.on{color:var(--acc)}
+
+/* recap */
+.recap-cta{display:flex;align-items:center;gap:10px;width:100%;margin:6px 0 10px;padding:14px 16px;border-radius:12px;background:linear-gradient(120deg,var(--acc),#c2410c);color:#1d1206;font-weight:700;font-size:15px;text-align:left}
+.recap{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;gap:12px;margin:0 -16px;padding:4px 16px 0;scrollbar-width:none}
+.recap::-webkit-scrollbar{display:none}
+.recap-card{flex:0 0 100%;scroll-snap-align:center;min-height:min(560px,68vh);border-radius:18px;padding:28px 22px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;text-align:center;background:linear-gradient(160deg,hsl(var(--h) 45% 28%),hsl(calc(var(--h) + 40) 40% 12%));color:#fff}
+.rc-kicker{font-size:13px;letter-spacing:.08em;text-transform:uppercase;opacity:.8;font-weight:700}
+.rc-big{font-size:clamp(64px,22vw,110px);font-weight:800;line-height:1}
+.rc-label{font-size:20px;font-weight:700}
+.rc-note{font-size:15px;opacity:.85}
+.rc-title{font-size:24px;font-weight:800;line-height:1.2}
+.rc-title.big{font-size:30px}
+.rc-sub{font-size:16px;opacity:.85;margin-top:-6px}
+.recap-card .rc-art{width:min(220px,55vw);height:min(220px,55vw);border-radius:10px;font-size:56px;box-shadow:0 10px 30px rgba(0,0,0,.45)}
+.recap-card .rc-art.round{border-radius:50%;width:min(170px,45vw);height:min(170px,45vw)}
+.rc-list{list-style:none;padding:0;margin:8px 0 0;width:100%;max-width:340px;counter-reset:r}
+.rc-list li{display:flex;align-items:center;gap:12px;padding:8px 0;border-top:1px solid rgba(255,255,255,.12);text-align:left;counter-increment:r;font-size:15px}
+.rc-list[start="2"]{counter-reset:r 1}
+.rc-list li::before{content:counter(r);font-weight:800;width:20px;opacity:.7}
+.rc-list li .ellipsis{flex:1;min-width:0}
+.rc-list li>span:last-child{opacity:.75;font-size:13px}
+.rc-list.big li{font-size:16px}
+.rc-list small{opacity:.75;font-size:13px}
+.rc-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;width:100%;max-width:340px;margin-top:6px}
+.rc-grid div{background:rgba(255,255,255,.1);border-radius:12px;padding:16px 8px;display:flex;flex-direction:column;gap:2px}
+.rc-grid b{font-size:26px}
+.rc-grid span{font-size:13px;opacity:.8}
+.recap-card .btn{margin-top:10px}
+.recap-dots{display:flex;justify-content:center;gap:6px;margin:12px 0 4px}
+.recap-dots span{width:6px;height:6px;border-radius:50%;background:var(--muted);opacity:.5;transition:all .2s}
+.recap-dots span.on{width:18px;border-radius:3px;background:var(--acc);opacity:1}
