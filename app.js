@@ -1,7 +1,7 @@
 'use strict';
 /* Isai: personal music and podcast player. All data stays on this device. */
 
-const VERSION = '1.7.1';
+const VERSION = '1.7.2';
 const DEFAULT_JAMENDO = '339d4597';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -861,7 +861,7 @@ function relayNoticeIfNeeded() {
 
 Views.podsearch = () => topbar('Find podcasts', { back: true }) +
   `<form data-f="podsearch"><div class="search">${icon('search')}<input id="pq" type="search" placeholder="Show name or topic" value="${esc(S.podQ || '')}" autocomplete="off" enterkeyhint="search"></div></form>
-   <div class="chips">${['Finance', 'Product management', 'Tech news', 'Tamil', 'Kannada', 'History', 'Comedy', 'Self improvement'].map(t => `<button class="chip" data-a="podq" data-q="${esc(t)}">${esc(t)}</button>`).join('')}</div><div id="presults"></div>`;
+   <div class="chips">${[['Finance'], ['Product management'], ['Business'], ['Law'], ['M&A', 'mergers and acquisitions'], ['Tech news'], ['English'], ['Tamil'], ['Kannada'], ['Gym', 'fitness'], ['Motivation'], ['History'], ['Comedy'], ['Self improvement']].map(([t, q]) => `<button class="chip" data-a="podq" data-q="${esc(q || t)}">${esc(t)}</button>`).join('')}</div><div id="presults"></div>`;
 Views.podsearch.after = () => { if (S.podQ) runPodSearch(S.podQ); else $('#pq').focus(); };
 async function runPodSearch(q) {
   S.podQ = q;
