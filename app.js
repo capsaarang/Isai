@@ -1,7 +1,7 @@
 'use strict';
 /* Isai: personal music and podcast player. All data stays on this device. */
 
-const VERSION = '1.6.1';
+const VERSION = '1.7.0';
 const DEFAULT_JAMENDO = '339d4597';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -65,6 +65,7 @@ const DB = {
   },
   get(s, k) { return this.req(s, 'readonly', st => st.get(k)); },
   put(s, k, v) { return this.req(s, 'readwrite', st => st.put(v, k)); },
+  putMany(s, pairs) { return this.req(s, 'readwrite', st => { for (const [k, v] of pairs) st.put(v, k); }); },
   del(s, k) { return this.req(s, 'readwrite', st => st.delete(k)); },
   all(s) { return this.req(s, 'readonly', st => st.getAll()); },
 };
@@ -770,6 +771,7 @@ function libBodyHTML() {
   if (S.libTab === 'songs') {
     const list = sortTracks(S.tracks.filter(t => matchFilter(t.title, t.artist, t.album)));
     h += `<div class="chips" style="margin-bottom:8px">${SORTS.map(([k, l]) => `<button class="chip ${S.libSort === k ? 'on' : ''}" data-a="lib-sort" data-t="${k}">${l}</button>`).join('')}</div>`;
+    h += `<div class="enrich-line muted ${Enrich.line() ? '' : 'hidden'}">${esc(Enrich.line())}</div>`;
     h += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><span class="muted" style="font-size:13px">${list.length} song${list.length === 1 ? '' : 's'}</span><button class="btn small primary" data-a="shuffle-all">${icon('shuffle', 'sm')} Shuffle</button></div>`;
     h += list.length ? rowsHTML(list.map(songP), 'Your library', { dur: true }) : emptyHTML('search', 'No matches', 'Try another word.');
   } else if (S.libTab === 'albums') {
@@ -1211,6 +1213,7 @@ Views.settings = async () => {
       <div class="setting-row"><span>Account</span><span class="muted ellipsis" style="max-width:60%">${esc(S.settings.gdrive.email)}</span></div>
       <div class="setting-row"><span>Music folder</span><button class="acc" data-a="drive-folder">${esc(S.settings.gdrive.folderName || 'Choose')}</button></div>
       <div class="setting-row"><span>Songs from Drive</span><span class="muted">${S.tracks.filter(t => t.source === 'gdrive').length} (${S.tracks.filter(t => t.source === 'gdrive' && t.offline).length} offline)</span></div>
+      <div class="enrich-line muted ${Enrich.line() ? '' : 'hidden'}" style="padding-top:10px">${esc(Enrich.line())}</div>
       <div class="setting-row"><span>Last scanned</span><span class="muted">${S.settings.gdrive.lastScan ? esc(relDate(S.settings.gdrive.lastScan)) + ' ' + new Date(S.settings.gdrive.lastScan).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : 'Not yet'}</span></div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px">
         <button class="btn small primary" data-a="drive-scan">${icon('refresh', 'sm')} Scan for new songs</button>
@@ -1517,7 +1520,7 @@ const A = {
   'drive-connect': d => Drive.connect(d.p && typeof d.p === 'string' ? d.p : 'setup'),
   'drive-renew': async d => {
     const ok = await Drive.quickRenew();
-    if (ok) { closeSheet(); toast('Google Drive reconnected', 1600); if (d.p === 'scan') setTimeout(driveScan, 300); else if (d.p === 'sync') Sync.run(); else if (Player.cur && !Player.ready) Player.load(true); return; }
+    if (ok) { closeSheet(); toast('Google Drive reconnected', 1600); setTimeout(() => Enrich.run(), 500); if (d.p === 'scan') setTimeout(driveScan, 300); else if (d.p === 'sync') Sync.run(); else if (Player.cur && !Player.ready) Player.load(true); return; }
     Drive.connect(d.p || 'play');
   },
   'sync-now': async () => {
@@ -1571,7 +1574,7 @@ async function toggleFav(p) {
 
 document.addEventListener('click', e => {
   if (Drive.connected() && !Drive.renewing && Date.now() - Drive.lastRenewTry > 120000 && Drive.minutesLeft() < 10 && !e.target.closest('[data-a="drive-renew"],[data-a="drive-connect"]')) {
-    if (window.google && google.accounts && google.accounts.oauth2) Drive.quickRenew();
+    if (window.google && google.accounts && google.accounts.oauth2) Drive.quickRenew().then(ok => { if (ok) Enrich.run(); });
     else Drive.loadGIS();
   }
   const el = e.target.closest('[data-a]');
@@ -1788,11 +1791,11 @@ const Drive = {
 };
 function tagsToTrack(tags, fileName) {
   const clean = s => (s == null ? '' : String(s)).replace(/\0/g, '').trim();
-  const base = fileName.replace(/\.[^.]+$/, '');
+  const base = fileName.replace(/\.[^.]+$/, '').replace(/^(?:\d+\s*[._-]?\s*-?\s*)+(?=\D)/, '').trim() || fileName.replace(/\.[^.]+$/, '');
   let title = clean(tags.title), artist = clean(tags.artist);
   if (!title) {
-    const m = base.match(/^(?:\d+[\s._-]+)?(.+?)\s+-\s+(.+)$/);
-    if (m && !artist) { artist = m[1]; title = m[2]; } else title = base.replace(/^\d+[\s._-]+/, '');
+    const m = base.match(/^(.+?)\s+-\s+(.+)$/);
+    if (m && !artist && !/^\d+$/.test(m[1].trim())) { artist = m[1]; title = m[2]; } else title = base;
   }
   return { title, artist: artist || 'Unknown artist', album: clean(tags.album) || 'Unknown album', year: clean(tags.year), track: parseInt(tags.track) || 0 };
 }
@@ -1825,7 +1828,7 @@ async function runDrivePending() {
       toast(`Switched to ${email}`, 2000);
     } else S.settings.gdrive = Object.assign({}, prev || {}, { email });
     await saveKV.settings();
-    if (what === 'play') { toast('Google Drive reconnected. Tap play to continue.', 3000); return; }
+    if (what === 'play') { toast('Google Drive reconnected. Tap play to continue.', 3000); Enrich.run(); return; }
     if (what === 'sync') { const ok = await Sync.run(); toast(ok ? 'Sync is on' : "Couldn't turn on sync. Try again.", 2500); rerenderKeepScroll(); return; }
     if (!S.settings.gdrive.folderId) { await useDriveFolder('Isai', true); return; }
     if (what === 'scan' || what === 'setup') driveScan();
@@ -1864,6 +1867,67 @@ function driveAuthSheet(pending = 'play') {
     <p class="muted" style="font-size:14px;margin:0 0 16px">Google needs a quick check about once an hour. Tap below. A Google window may flash open and close by itself.</p>
     <button class="btn primary" style="width:100%" data-a="drive-renew" data-p="${esc(pending)}">Reconnect</button>`);
 }
+/* reads title, artist, album, and cover art in the background, 5 songs at a time */
+function syncsafe(b, o) { return ((b[o] & 0x7f) << 21) | ((b[o + 1] & 0x7f) << 14) | ((b[o + 2] & 0x7f) << 7) | (b[o + 3] & 0x7f); }
+async function readDriveTags(t) {
+  const isMp3 = /\.mp3$/i.test(t.fileKey + (t.mime || '')) || /mpeg/i.test(t.mime || '') || /\.mp3$/i.test(t.title || '');
+  let head = await Drive.fileBlob(t.driveId, 'bytes=0-65535');
+  const b = new Uint8Array(await head.slice(0, 10).arrayBuffer());
+  if (b[0] === 0x49 && b[1] === 0x44 && b[2] === 0x33) {
+    const need = Math.min(syncsafe(b, 6) + 10 + (b[5] & 0x10 ? 10 : 0), 3 * 1048576);
+    if (need > head.size && head.size >= 65536) head = await Drive.fileBlob(t.driveId, `bytes=0-${need - 1}`);
+  } else if (!isMp3 && head.size >= 65536) {
+    head = await Drive.fileBlob(t.driveId, 'bytes=0-393215');
+  }
+  return readTags(new File([head], 'x', { type: head.type || t.mime || 'audio/mpeg' }));
+}
+const Enrich = {
+  active: false, done: 0, total: 0, paused: false, lastRender: 0,
+  pending() { return S.tracks.filter(t => t.source === 'gdrive' && t.tagged === false); },
+  line() { return this.active && this.total ? `Reading song details: ${this.done} of ${this.total}` : this.paused ? 'Song details paused until Google reconnects' : ''; },
+  showLine() { document.querySelectorAll('.enrich-line').forEach(el => { const l = this.line(); el.textContent = l; el.classList.toggle('hidden', !l); }); },
+  async run() {
+    if (this.active || !Drive.token() || !navigator.onLine) { if (!Drive.token() && this.pending().length) { this.paused = true; this.showLine(); } return; }
+    const queue = this.pending();
+    if (!queue.length) { this.paused = false; this.showLine(); return; }
+    this.active = true; this.paused = false; this.done = 0; this.total = queue.length; this.showLine();
+    let stop = false;
+    const worker = async () => {
+      while (queue.length && !stop) {
+        const t = queue.shift();
+        if (!trackById(t.id)) continue;
+        try {
+          const tags = await readDriveTags(t);
+          const base = tagsToTrack(tags, t.fileKey.startsWith('gdrive|') ? (t.origName || t.title) + '.x' : t.title);
+          if (tags.title || tags.artist) Object.assign(t, { title: base.title, artist: base.artist });
+          if (tags.album) t.album = base.album;
+          if (tags.year) t.year = base.year;
+          if (tags.track) t.track = base.track;
+          if (tags.picture && tags.picture.data && tags.picture.data.length) {
+            await DB.put('art', t.id, new Blob([new Uint8Array(tags.picture.data)], { type: tags.picture.format || 'image/jpeg' }));
+            t.hasArt = true; artCache.delete(t.id);
+          }
+        } catch (e) {
+          if (e.message === 'gdrive-auth') { stop = true; queue.unshift(t); this.paused = true; break; }
+        }
+        t.tagged = true;
+        await DB.put('tracks', t.id, t).catch(() => { });
+        this.done++;
+        this.showLine();
+        if (this.done % 40 === 0 && Date.now() - this.lastRender > 8000) { this.lastRender = Date.now(); this.refresh(); }
+      }
+    };
+    await Promise.all([worker(), worker(), worker(), worker(), worker()]);
+    this.active = false;
+    this.showLine();
+    this.refresh();
+    if (!this.paused) { const moved = await carryOver(); if (moved) toast(`Likes and playlists carried over for ${moved} song${moved === 1 ? '' : 's'}`, 3000); }
+  },
+  refresh() {
+    if (document.hidden || document.activeElement?.matches('input,textarea') || $('#sheet').classList.contains('on')) return;
+    rerenderKeepScroll(); updatePlayerUI();
+  },
+};
 let scanning = false;
 async function driveScan(quiet = false) {
   const g = S.settings.gdrive;
@@ -1880,26 +1944,20 @@ async function driveScan(quiet = false) {
     for (const f of files) { const t = existing.get(f.id); if (t && (t.folderName || null) !== (f.folderName || null)) { t.folderName = f.folderName || null; await DB.put('tracks', t.id, t); } }
     const hidden = new Set(g.hidden || []);
     const todo = files.filter(f => !existing.has(f.id) && !hidden.has(f.id));
-    for (let i = 0; i < todo.length; i++) {
-      const f = todo[i];
-      toast(`Adding songs from Drive ${i + 1} of ${todo.length}`, 0);
-      let tags = {};
-      try { const head = await Drive.fileBlob(f.id, 'bytes=0-524287'); tags = await readTags(new File([head], f.name, { type: head.type || f.mimeType })); }
-      catch (e) { if (e.message === 'gdrive-auth') throw e; }
-      const id = 'g' + uid();
-      let hasArt = false;
-      if (tags.picture && tags.picture.data && tags.picture.data.length) {
-        try { await DB.put('art', id, new Blob([new Uint8Array(tags.picture.data)], { type: tags.picture.format || 'image/jpeg' })); hasArt = true; } catch { }
-      }
-      const t = Object.assign(tagsToTrack(tags, f.name), { id, folderName: f.folderName || null, duration: 0, addedAt: Date.now() + i, hasArt, source: 'gdrive', driveId: f.id, size: +f.size || 0, fileKey: 'gdrive|' + f.id, offline: false });
-      await DB.put('tracks', id, t);
-      S.tracks.push(t); added++;
-      if (i % 10 === 9) await sleep(0);
+    if (todo.length) {
+      const now = Date.now(), fresh = [];
+      todo.forEach((f, i) => fresh.push(Object.assign(tagsToTrack({}, f.name), { origName: f.name.replace(/\.[^.]+$/, ''),
+        id: 'g' + uid(), folderName: f.folderName || null, duration: 0, addedAt: now + i, hasArt: false, source: 'gdrive',
+        driveId: f.id, size: +f.size || 0, mime: f.mimeType || '', fileKey: 'gdrive|' + f.id, offline: false, tagged: false,
+      })));
+      for (let i = 0; i < fresh.length; i += 200) await DB.putMany('tracks', fresh.slice(i, i + 200).map(t => [t.id, t]));
+      S.tracks.push(...fresh); added = fresh.length;
     }
     g.lastScan = Date.now(); await saveKV.settings();
     let moved = 0;
     if (added) { moved = await carryOver(); Sync.soon(1000); }
-    if (!quiet || added || removed) toast(added || removed ? `Google Drive: ${added} added${removed ? `, ${removed} removed` : ''}${moved ? `. Likes, playlists, and stats carried over for ${moved} song${moved === 1 ? '' : 's'}` : ''}` : 'Google Drive is up to date', moved ? 4500 : 3000);
+    Enrich.run();
+    if (!quiet || added || removed) toast(added || removed ? `Google Drive: ${added} added${removed ? `, ${removed} removed` : ''}${added ? '. Ready to play while song details load' : ''}${moved ? `. Likes and playlists carried over for ${moved} song${moved === 1 ? '' : 's'}` : ''}` : 'Google Drive is up to date', added ? 4000 : 3000);
   } catch (e) {
     if (quiet) { if (added) toast(`Google Drive: ${added} added`, 2500); }
     else if (e.message === 'gdrive-auth') { toast('', 1); driveAuthSheet('scan'); }
@@ -2594,6 +2652,7 @@ async function start() {
   if (drivePending) setTimeout(runDrivePending, 400);
   else if (S.settings.gdrive && S.settings.gdrive.folderId && navigator.onLine) setTimeout(async () => { await driveScan(true); Sync.run(); }, 2500);
   setInterval(() => { if (!document.hidden) Sync.run(); }, 120000);
+  setTimeout(() => Enrich.run(), 4000);
   if (Drive.connected()) Drive.loadGIS();
   render();
   updatePlayerUI();
