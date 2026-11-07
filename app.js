@@ -1,7 +1,7 @@
 'use strict';
 /* Isai: personal music and podcast player. All data stays on this device. */
 
-const VERSION = '1.1.0';
+const VERSION = '1.1.1';
 const DEFAULT_JAMENDO = '339d4597';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -1725,7 +1725,14 @@ function boot() {
   try { id = sessionStorage.getItem('isai-profile'); } catch { }
   if (id && PROFILES.some(p => p.id === id)) start(id);
   else showPicker(false);
-  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => { });
+  if ('serviceWorker' in navigator && location.protocol === 'https:') {
+    navigator.serviceWorker.register('sw.js').catch(() => { });
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (reloaded || Player.cur && !audio.paused) return;
+      reloaded = true; location.reload();
+    });
+  }
 }
 async function start(id) {
   ME = PROFILES.find(p => p.id === id);
