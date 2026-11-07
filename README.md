@@ -9,6 +9,8 @@ A personal, ad-free music and podcast player for Android. No account, no trackin
 - **Library:** plays songs you add from your phone (MP3, M4A, FLAC, WAV, OGG). Reads title, artist, album, and cover art. Songs, albums, artists, playlists, liked songs, queue, shuffle, repeat.
 - **Podcasts:** search any public show, follow it, stream or download episodes, resume where you left off, speed control, skip 15/30 seconds, sleep timer.
 - **Discover:** free legal music from the Internet Archive (Creative Commons, public domain, and live-taping friendly recordings) and Jamendo (independent artists), plus internet radio by language. Save any track to your library for offline listening.
+- **Profiles:** "Who's listening?" on launch, with Captain and Donna. Each profile keeps its own songs, playlists, likes, podcasts, and history. Rename, change avatar, or clear a profile from Manage profiles.
+- **Listen together:** one phone starts a session and shares a code, the other joins. Play, pause, skip, and seek stay in sync on both phones. Podcasts, radio, and Discover music play on both; your own songs play when both phones have the same song.
 - Lock-screen and headphone controls, works offline, installs to the home screen.
 
 ## Install on Android
@@ -25,6 +27,15 @@ A personal, ad-free music and podcast player for Android. No account, no trackin
 4. Isai copies the songs into its own storage. Importing the same folder again skips songs that are already there.
 
 Keep the original files as a backup. Clearing Chrome's site data removes Isai's copies.
+
+## Listen together
+
+1. Both phones open Isai and pick their profile.
+2. One person taps the **Listen together** icon on Home (two people) and taps **Start a session**.
+3. Share the code (like `RAGA-42`). The other person taps **Listen together**, enters the code, and taps **Join**.
+4. Whoever presses play, pause, skip, or seeks becomes the one choosing. Tap the heart in the top banner to send a heart.
+
+Both phones need internet. On iPhone, keep Isai open: locking the screen or switching apps can pause the link until Isai is reopened. The link uses the free PeerJS connection service and sends only play and pause updates, never song files.
 
 ## Optional: podcast relay (free, about 5 minutes)
 
@@ -49,3 +60,4 @@ The relay only accepts requests from `capsaarang.github.io`, so nobody else can 
 | `manifest.webmanifest` | Home screen install |
 | `relay-worker.js` | Optional Cloudflare relay for podcasts |
 | `vendor/jsmediatags.min.js` | Reads song tags and cover art |
+| `vendor/peerjs.min.js` | Phone-to-phone link for Listen together (MIT) |

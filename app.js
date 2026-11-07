@@ -1,7 +1,7 @@
 'use strict';
 /* Isai: personal music and podcast player. All data stays on this device. */
 
-const VERSION = '1.0.2';
+const VERSION = '1.1.0';
 const DEFAULT_JAMENDO = '339d4597';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -45,10 +45,10 @@ function stripHtml(html) {
 
 /* ---------- storage ---------- */
 const DB = {
-  db: null,
+  db: null, name: 'isai',
   open() {
     return new Promise((res, rej) => {
-      const r = indexedDB.open('isai', 1);
+      const r = indexedDB.open(this.name, 1);
       r.onupgradeneeded = () => { for (const n of ['tracks', 'blobs', 'art', 'kv']) if (!r.result.objectStoreNames.contains(n)) r.result.createObjectStore(n); };
       r.onsuccess = () => { this.db = r.result; res(); };
       r.onerror = () => rej(r.error);
@@ -223,6 +223,7 @@ const Player = {
     if (autoplay) { audio.play().catch(() => { }); addRecent(p); }
     updatePlayerUI(); updateMediaSession(); saveState();
     markPlayingRows();
+    Together.localEvent();
   },
   toggle() {
     if (!this.cur) return;
@@ -289,17 +290,19 @@ audio.addEventListener('timeupdate', () => {
   if (now - lastSave > 15000) { lastSave = now; saveState(); }
   if (Player.sleepAt && now >= Player.sleepAt) { Player.sleepAt = 0; audio.pause(); toast('Sleep timer: paused'); updateSleepLabel(); }
 });
-audio.addEventListener('play', updatePlayerUI);
-audio.addEventListener('pause', () => { updatePlayerUI(); saveState(); });
+audio.addEventListener('play', () => { if (Together.isSilent()) return; updatePlayerUI(); Together.localEvent(); });
+audio.addEventListener('pause', () => { if (Together.isSilent()) return; updatePlayerUI(); saveState(); Together.localEvent(); });
+audio.addEventListener('seeked', () => Together.localEvent());
 audio.addEventListener('loadedmetadata', () => { updateProgressUI(); updateMediaSession(); });
 audio.addEventListener('ended', () => {
+  if (Together.isSilent()) return;
   const p = Player.cur;
   if (p && p.type === 'episode') { S.progress[p.id] = { t: 0, d: audio.duration, done: true, at: Date.now() }; saveKV.progress(); }
   if (Player.sleepEnd) { Player.sleepEnd = false; updateSleepLabel(); toast('Sleep timer: stopped'); updatePlayerUI(); return; }
   Player.next(true);
 });
 audio.addEventListener('error', () => {
-  if (!audio.src || !Player.ready) return;
+  if (!audio.src || !Player.ready || Together.isSilent()) return;
   const p = Player.cur;
   toast(p && p.type === 'radio' ? "This station isn't responding" : "Couldn't play this. Skipping");
   if (p && p.type !== 'radio' && Player.idx < Player.queue.length - 1) setTimeout(() => Player.next(), 800);
@@ -423,7 +426,7 @@ function openSheet(html) {
   hydrateArt(sh);
   if (!wasOpen) { sh.classList.add('on'); $('#scrim').classList.add('on'); pushLayer('sheet'); }
 }
-function hideSheet() { $('#sheet').classList.remove('on'); $('#scrim').classList.remove('on'); }
+function hideSheet() { $('#sheet').classList.remove('on'); $('#scrim').classList.remove('on'); sheetKind = ''; }
 function closeSheet() { if ($('#sheet').classList.contains('on')) history.back(); }
 
 /* ---------- navigation ---------- */
@@ -549,10 +552,13 @@ function continueEpisodes() {
 const Views = {};
 
 Views.home = () => {
-  const right = `<button class="iconbtn" data-a="import" aria-label="Add songs">${icon('upload')}</button><button class="iconbtn" data-a="go" data-v="settings" aria-label="Settings">${icon('gear')}</button>`;
-  let h = topbar(greeting(), { right });
+  let h = `<div class="topbar" style="margin-bottom:6px"><button class="me-btn" data-a="switch-profile" aria-label="Switch profile">${avatarHTML(ME, 34)}</button><span style="flex:1"></span>
+    <button class="iconbtn" data-a="together" aria-label="Listen together">${icon('users')}</button>
+    <button class="iconbtn" data-a="import" aria-label="Add songs">${icon('upload')}</button>
+    <button class="iconbtn" data-a="go" data-v="settings" aria-label="Settings">${icon('gear')}</button></div>
+    <h1 class="welcome">Welcome to the world of Isai</h1>`;
   if (!S.tracks.length && !S.podcasts.length && !S.recent.length) {
-    return h + emptyHTML('music', 'Welcome to Isai', 'Add songs from your Rajan folder, follow podcasts, or explore free music and radio.',
+    return h + emptyHTML('music', 'Let\'s get started', 'Add songs from your Rajan folder, follow podcasts, or explore free music and radio.',
       `<div style="display:flex;flex-direction:column;gap:10px;align-items:center">
         <button class="btn primary" data-a="import">${icon('upload', 'sm')} Add songs</button>
         <button class="btn ghost" data-a="tab" data-t="podcasts">${icon('mic', 'sm')} Find podcasts</button>
@@ -1270,6 +1276,34 @@ const A = {
     S.epDl = {}; await saveKV.epDl(); toast('Downloads deleted'); rerenderKeepScroll();
   },
   'clear-recent': async () => { S.recent = []; await saveKV.recent(); toast('Cleared'); },
+  'switch-profile': () => switchProfile(),
+  together: () => togetherSheet(),
+  'tg-host': () => Together.host(),
+  'tg-leave': () => { Together.leave(); closeSheet(); },
+  'tg-heart': () => Together.react(),
+  'tg-share': async () => {
+    const text = `Join me on Isai. Open Listen together and enter code ${Together.code}`;
+    try { if (navigator.share) { await navigator.share({ text }); return; } } catch { return; }
+    try { await navigator.clipboard.writeText(Together.code); toast('Code copied'); } catch { toast('Code: ' + Together.code, 4000); }
+  },
+  'pf-rename': () => {
+    const p = editingProfile; if (!p) return;
+    const n = (prompt('Profile name', p.name) || '').trim().slice(0, 20);
+    if (!n) return;
+    p.name = n; if (saveProfiles()) afterProfileEdit('Name updated');
+  },
+  'pf-avatar': () => avatarSheet(),
+  'pf-set-av': d => { const p = editingProfile; if (!p) return; p.avatar = d.k; delete p.photo; if (saveProfiles()) afterProfileEdit('Avatar updated'); },
+  'pf-photo': () => $('#photo-input').click(),
+  'pf-clear': async () => {
+    const p = editingProfile; if (!p) return;
+    if (!confirm(`Delete all of ${p.name}'s songs, playlists, likes, podcasts, and history on this phone? This can't be undone.`)) return;
+    const isMe = ME && ME.id === p.id;
+    if (isMe) { try { audio.pause(); } catch { } try { DB.db && DB.db.close(); } catch { } }
+    await new Promise(res => { const r = indexedDB.deleteDatabase(dbNameFor(p.id)); r.onsuccess = r.onerror = r.onblocked = () => res(); });
+    if (isMe) { try { sessionStorage.removeItem('isai-profile'); } catch { } location.reload(); return; }
+    afterProfileEdit(`${p.name}'s data cleared`);
+  },
 };
 async function toggleLike(id) {
   if (S.liked.has(id)) { S.liked.delete(id); toast('Removed from liked songs', 1400); } else { S.liked.add(id); toast('Added to liked songs', 1400); }
@@ -1295,6 +1329,7 @@ document.addEventListener('click', e => {
 document.addEventListener('submit', async e => {
   const f = e.target.dataset.f; if (!f) return;
   e.preventDefault();
+  if (f === 'tg-join') { const v = $('#tg-code').value; $('#tg-code').blur(); Together.join(v); return; }
   if (f === 'disc') { const q = $('#dq').value.trim(); $('#dq').blur(); runDiscover(q); }
   if (f === 'podsearch') { const q = $('#pq').value.trim(); $('#pq').blur(); if (q) runPodSearch(q); }
   if (f === 'settings') {
@@ -1319,6 +1354,7 @@ $('#np-like').addEventListener('click', likeAction);
 $('#np-close').addEventListener('click', () => closeTop());
 $('#np-more').addEventListener('click', () => { if (Player.cur) itemSheet(Player.cur); });
 $('#np-queue').addEventListener('click', queueSheet);
+$('#np-together').addEventListener('click', togetherSheet);
 $('#np-sleep').addEventListener('click', sleepSheet);
 $('#np-add').addEventListener('click', () => {
   const p = Player.cur; if (!p) return;
@@ -1349,8 +1385,351 @@ document.addEventListener('keydown', e => {
 });
 document.addEventListener('visibilitychange', () => { if (document.hidden) saveState(); });
 
+/* ---------- profiles ---------- */
+const DEFAULT_PROFILES = [{ id: 'captain', name: 'Captain', avatar: 'captain' }, { id: 'donna', name: 'Donna', avatar: 'donna' }];
+const dbNameFor = id => (id === 'captain' ? 'isai' : 'isai-' + id);
+function loadProfiles() {
+  try {
+    const p = JSON.parse(localStorage.getItem('isai-profiles') || 'null');
+    if (Array.isArray(p) && p.length === 2 && p.every(x => x && x.id && x.name)) return p;
+  } catch { }
+  return DEFAULT_PROFILES.map(x => ({ ...x }));
+}
+let PROFILES = loadProfiles();
+let ME = null;
+function saveProfiles() { try { localStorage.setItem('isai-profiles', JSON.stringify(PROFILES)); return true; } catch { toast("Couldn't save that change. The photo may be too large."); return false; } }
+const person = (bg, shirt, skin, hair, extra = '') => `<svg viewBox="0 0 100 100"><rect width="100" height="100" fill="${bg}"/><path d="M22 100 C22 76 34 66 50 66 C66 66 78 76 78 100 Z" fill="${shirt}"/>${extra.includes('@collar') ? '' : ''}<circle cx="50" cy="44" r="17" fill="${skin}"/>${hair}${extra.replace('@collar', '')}</svg>`;
+const AVATARS = {
+  captain: `<svg viewBox="0 0 100 100"><rect width="100" height="100" fill="#1c2b3a"/><path d="M22 100 C22 76 34 66 50 66 C66 66 78 76 78 100 Z" fill="#26364a"/><path d="M42 66 L50 80 L58 66 Z" fill="#f2f2f2"/><path d="M48 70 L50 92 L52 70 Z" fill="#EF9F27"/><circle cx="50" cy="44" r="17" fill="#c58a5c"/><path d="M33 42 C33 28 42 22 52 23 C62 24 68 31 67 42 C64 34 56 31 48 33 C42 34 36 37 33 42 Z" fill="#1f1a17"/></svg>`,
+  donna: `<svg viewBox="0 0 100 100"><rect width="100" height="100" fill="#3a1f2a"/><path d="M22 100 C22 76 34 66 50 66 C66 66 78 76 78 100 Z" fill="#7a2e4a"/><circle cx="50" cy="44" r="17" fill="#d9a07a"/><path d="M31 50 C28 30 38 20 51 21 C64 22 72 32 69 50 C67 44 64 38 60 35 C54 38 44 38 38 34 C35 38 33 44 31 50 Z" fill="#1f1a17"/><g transform="translate(70 18)" fill="#f4efe6"><ellipse cx="0" cy="-5" rx="3" ry="5"/><ellipse cx="0" cy="-5" rx="3" ry="5" transform="rotate(72)"/><ellipse cx="0" cy="-5" rx="3" ry="5" transform="rotate(144)"/><ellipse cx="0" cy="-5" rx="3" ry="5" transform="rotate(216)"/><ellipse cx="0" cy="-5" rx="3" ry="5" transform="rotate(288)"/><circle r="2.5" fill="#EF9F27"/></g></svg>`,
+  cap: person('#1c2b3a', '#378ADD', '#b77d52', '<path d="M32 38 C32 26 68 26 68 38 Z" fill="#EF9F27"/><path d="M60 37 H80" stroke="#EF9F27" stroke-width="5" stroke-linecap="round"/>'),
+  bun: person('#2a1d2e', '#5DCAA5', '#c9926a', '<circle cx="50" cy="20" r="9" fill="#1f1a17"/><path d="M33 42 C33 28 67 28 67 42 C62 36 38 36 33 42 Z" fill="#1f1a17"/>'),
+  listener: person('#1f1a12', '#AFA9EC', '#a8714a', '<path d="M33 44 C33 30 67 30 67 44" fill="none" stroke="#1f1a17" stroke-width="7"/><path d="M30 46 a20 20 0 0 1 40 0" fill="none" stroke="#EF9F27" stroke-width="4"/><rect x="27" y="42" width="8" height="12" rx="3" fill="#EF9F27"/><rect x="65" y="42" width="8" height="12" rx="3" fill="#EF9F27"/>'),
+  glasses: person('#25202a', '#F0997B', '#d9a07a', '<path d="M32 46 C30 26 70 26 68 46 C64 34 36 34 32 46 Z" fill="#2c2420"/><circle cx="43" cy="46" r="5" fill="none" stroke="#2c2420" stroke-width="2"/><circle cx="57" cy="46" r="5" fill="none" stroke="#2c2420" stroke-width="2"/><path d="M48 46 h4" stroke="#2c2420" stroke-width="2"/>'),
+  tiger: `<svg viewBox="0 0 100 100"><rect width="100" height="100" fill="#2a1d12"/><circle cx="30" cy="34" r="10" fill="#EF9F27"/><circle cx="70" cy="34" r="10" fill="#EF9F27"/><circle cx="50" cy="56" r="28" fill="#EF9F27"/><path d="M50 30 v10 M38 34 l4 8 M62 34 l-4 8 M24 54 h10 M66 54 h10" stroke="#2b1700" stroke-width="3" stroke-linecap="round"/><ellipse cx="50" cy="66" rx="12" ry="9" fill="#fbf6ee"/><circle cx="40" cy="52" r="3" fill="#2b1700"/><circle cx="60" cy="52" r="3" fill="#2b1700"/><path d="M47 62 h6 l-3 3 Z" fill="#2b1700"/></svg>`,
+  elephant: `<svg viewBox="0 0 100 100"><rect width="100" height="100" fill="#1e2a33"/><circle cx="26" cy="46" r="17" fill="#8fa3b3"/><circle cx="74" cy="46" r="17" fill="#8fa3b3"/><circle cx="50" cy="48" r="22" fill="#a9bccb"/><path d="M50 58 C50 72 44 80 38 80" fill="none" stroke="#a9bccb" stroke-width="10" stroke-linecap="round"/><circle cx="42" cy="44" r="3" fill="#1e2a33"/><circle cx="58" cy="44" r="3" fill="#1e2a33"/></svg>`,
+  peacock: `<svg viewBox="0 0 100 100"><rect width="100" height="100" fill="#0e2420"/><g fill="#5DCAA5"><ellipse cx="30" cy="40" rx="8" ry="16" transform="rotate(-30 30 40)"/><ellipse cx="50" cy="32" rx="8" ry="16"/><ellipse cx="70" cy="40" rx="8" ry="16" transform="rotate(30 70 40)"/></g><g fill="#185FA5"><circle cx="30" cy="34" r="4"/><circle cx="50" cy="24" r="4"/><circle cx="70" cy="34" r="4"/></g><ellipse cx="50" cy="66" rx="12" ry="18" fill="#378ADD"/><circle cx="50" cy="48" r="9" fill="#378ADD"/><circle cx="53" cy="46" r="2" fill="#fff"/><path d="M58 49 l7 2 -7 2 Z" fill="#EF9F27"/></svg>`,
+  owl: `<svg viewBox="0 0 100 100"><rect width="100" height="100" fill="#2a2235"/><path d="M28 30 L36 42 M72 30 L64 42" stroke="#AFA9EC" stroke-width="5" stroke-linecap="round"/><ellipse cx="50" cy="58" rx="26" ry="28" fill="#AFA9EC"/><circle cx="40" cy="50" r="10" fill="#fbf6ee"/><circle cx="60" cy="50" r="10" fill="#fbf6ee"/><circle cx="40" cy="50" r="4" fill="#26215C"/><circle cx="60" cy="50" r="4" fill="#26215C"/><path d="M46 60 l4 6 4 -6 Z" fill="#EF9F27"/></svg>`,
+  headphones: `<svg viewBox="0 0 100 100"><rect width="100" height="100" fill="#EF9F27"/><path d="M26 60 V50 a24 24 0 0 1 48 0 V60" fill="none" stroke="#2b1700" stroke-width="7" stroke-linecap="round"/><rect x="20" y="54" width="15" height="24" rx="6" fill="#2b1700"/><rect x="65" y="54" width="15" height="24" rx="6" fill="#2b1700"/></svg>`,
+  vinyl: `<svg viewBox="0 0 100 100"><rect width="100" height="100" fill="#121212"/><circle cx="50" cy="50" r="32" fill="#2a2a2a"/><circle cx="50" cy="50" r="24" fill="none" stroke="#3a3a3a" stroke-width="1.5"/><circle cx="50" cy="50" r="12" fill="#ED93B1"/><circle cx="50" cy="50" r="2.5" fill="#121212"/></svg>`,
+  jasmine: `<svg viewBox="0 0 100 100"><rect width="100" height="100" fill="#1d1a14"/><g transform="translate(50 50)"><g fill="#f4efe6"><ellipse cx="0" cy="-19" rx="9" ry="15"/><ellipse cx="0" cy="-19" rx="9" ry="15" transform="rotate(72)"/><ellipse cx="0" cy="-19" rx="9" ry="15" transform="rotate(144)"/><ellipse cx="0" cy="-19" rx="9" ry="15" transform="rotate(216)"/><ellipse cx="0" cy="-19" rx="9" ry="15" transform="rotate(288)"/></g><circle r="9" fill="#EF9F27"/></g></svg>`,
+  wings: `<svg viewBox="0 0 100 100"><rect width="100" height="100" fill="#1c3550"/><g fill="#FAC775"><path d="M50 44 C40 40 26 40 12 44 C24 46 34 48 44 52 Z"/><path d="M50 44 C60 40 74 40 88 44 C76 46 66 48 56 52 Z"/><path d="M44 50 C36 50 26 52 18 54 C28 55 36 56 44 57 Z" opacity="0.8"/><path d="M56 50 C64 50 74 52 82 54 C72 55 64 56 56 57 Z" opacity="0.8"/></g><circle cx="50" cy="50" r="8" fill="#EF9F27"/><circle cx="50" cy="50" r="3.5" fill="#1c3550"/></svg>`,
+};
+function avatarHTML(p, size = 40) {
+  const inner = p && p.photo ? `<img src="${esc(p.photo)}" alt="">` : (AVATARS[(p && p.avatar) || 'captain'] || AVATARS.captain);
+  return `<span class="avatar" style="width:${size}px;height:${size}px">${inner}</span>`;
+}
+const LOGO_SVG = `<svg viewBox="0 0 100 100" width="48" height="48" aria-hidden="true"><rect width="100" height="100" rx="22" fill="#1e1e1e"/><path d="M18 50 Q26 30 34 50 T50 50 T66 50 T82 50" fill="none" stroke="#EF9F27" stroke-width="7" stroke-linecap="round"/><path d="M18 50 Q26 70 34 50" fill="none" stroke="#EF9F27" stroke-width="3" stroke-linecap="round" opacity="0.5"/></svg>`;
+
+let pickerManage = false;
+function showPicker(manage = false) {
+  pickerManage = manage;
+  const el = $('#picker');
+  el.classList.remove('hidden');
+  el.innerHTML = `<div class="pk-inner">${LOGO_SVG}<h1>${manage ? 'Manage profiles' : "Who's listening?"}</h1>
+    <div class="pk-row">${PROFILES.map(p => `<button class="pk-item" data-pk="${esc(p.id)}" aria-label="${esc(p.name)}"><span class="pk-av">${avatarHTML(p, 112)}${manage ? `<span class="pk-edit">${icon('edit')}</span>` : ''}</span><span class="pk-name">${esc(p.name)}</span></button>`).join('')}</div>
+    <button class="btn small ghost" data-pk-manage>${manage ? 'Done' : 'Manage profiles'}</button></div>`;
+}
+$('#picker').addEventListener('click', e => {
+  const b = e.target.closest('[data-pk]');
+  if (b) { if (pickerManage) profileSheet(b.dataset.pk); else chooseProfile(b.dataset.pk); return; }
+  if (e.target.closest('[data-pk-manage]')) showPicker(!pickerManage);
+});
+function chooseProfile(id) {
+  try { sessionStorage.setItem('isai-profile', id); } catch { }
+  $('#picker').classList.add('hidden');
+  start(id);
+}
+function switchProfile() {
+  try { audio.pause(); saveState(); } catch { }
+  Together.leave(true);
+  try { sessionStorage.removeItem('isai-profile'); } catch { }
+  location.reload();
+}
+let editingProfile = null;
+function profileSheet(id) {
+  const p = PROFILES.find(x => x.id === id); if (!p) return;
+  editingProfile = p;
+  openSheet(`<div class="sheet-head">${avatarHTML(p, 48)}<div style="font-weight:600;font-size:16px">${esc(p.name)}</div></div>` +
+    opt('pf-rename', 'edit', 'Rename') + opt('pf-avatar', 'user', 'Change avatar') + opt('pf-clear', 'trash', `Clear ${p.name}'s data`, '', 'danger'));
+}
+function avatarSheet() {
+  const p = editingProfile; if (!p) return;
+  openSheet(`<div style="font-weight:700;font-size:17px;margin-bottom:12px">Choose an avatar</div>
+    <div class="av-grid">${Object.keys(AVATARS).map(k => `<button class="av-opt ${!p.photo && p.avatar === k ? 'on' : ''}" data-a="pf-set-av" data-k="${k}" aria-label="${k}">${avatarHTML({ avatar: k }, 64)}</button>`).join('')}</div>
+    <button class="btn ghost" style="width:100%;margin-top:16px" data-a="pf-photo">${icon('upload', 'sm')} Use a photo from this phone</button>`);
+}
+async function photoToDataURL(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
+    const c = document.createElement('canvas'); c.width = c.height = 240;
+    const s = Math.min(img.width, img.height);
+    c.getContext('2d').drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, 240, 240);
+    return c.toDataURL('image/jpeg', 0.82);
+  } finally { URL.revokeObjectURL(url); }
+}
+$('#photo-input').addEventListener('change', async e => {
+  const f = e.target.files && e.target.files[0]; e.target.value = '';
+  if (!f || !editingProfile) return;
+  try {
+    const old = editingProfile.photo;
+    editingProfile.photo = await photoToDataURL(f);
+    if (!saveProfiles()) { editingProfile.photo = old; return; }
+    afterProfileEdit('Photo updated');
+  } catch { toast("Couldn't use that photo"); }
+});
+function afterProfileEdit(msg) {
+  closeSheet(); if (msg) toast(msg, 1600);
+  setTimeout(() => {
+    if (!$('#picker').classList.contains('hidden')) showPicker(pickerManage);
+    if (ME) { ME = PROFILES.find(x => x.id === ME.id) || ME; rerenderKeepScroll(); }
+  }, 80);
+}
+
+/* ---------- listen together ---------- */
+const SILENT_WAV = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+const Together = {
+  peer: null, conn: null, code: '', role: null, partner: null, offset: 0, controller: null,
+  suppressUntil: 0, bt: null, hb: null, missing: null, status: 'idle', err: '',
+  isSilent() { return (audio.currentSrc || audio.src || '').startsWith('data:audio/wav'); },
+  connected() { return !!(this.conn && this.conn.open && this.partner); },
+  makeCode() { const w = ['RAGA', 'TALA', 'VEENA', 'MALLI', 'KUYIL', 'ISAI', 'NILA', 'MAYIL', 'SWARA', 'PALLAVI']; return w[Math.floor(Math.random() * w.length)] + '-' + (10 + Math.floor(Math.random() * 90)); },
+  peerId(code) { return 'isai-together-' + code.toLowerCase().replace(/[^a-z0-9]/g, ''); },
+  unlock() {
+    if (Player.ready && audio.src && !this.isSilent()) return;
+    try { audio.src = SILENT_WAV; const p = audio.play(); if (p) p.then(() => audio.pause()).catch(() => { }); } catch { }
+  },
+  newPeer(id) {
+    if (!window.Peer) { this.fail("Listen together needs internet. Check your connection and try again."); return null; }
+    const p = id ? new Peer(id, { debug: 0 }) : new Peer({ debug: 0 });
+    p.on('error', e => this.onError(e));
+    p.on('disconnected', () => { if (this.peer === p && !this.connected() && this.status !== 'idle') { try { p.reconnect(); } catch { } } });
+    return p;
+  },
+  host() {
+    this.leave(true); this.unlock();
+    this.role = 'host'; this.code = this.makeCode(); this.status = 'starting'; this.err = '';
+    this.peer = this.newPeer(this.peerId(this.code)); if (!this.peer) return;
+    this.peer.on('open', () => { this.status = 'waiting'; refreshTogether(); });
+    this.peer.on('connection', c => {
+      if (this.connected()) { c.on('open', () => { c.send({ t: 'busy' }); setTimeout(() => c.close(), 400); }); return; }
+      this.attach(c);
+    });
+    refreshTogether();
+  },
+  join(code) {
+    code = String(code || '').trim().toUpperCase().replace(/\s+/g, '-');
+    if (!/^[A-Z]+-?\d{2}$/.test(code)) { this.err = 'Enter the code exactly as shown, like RAGA-42'; refreshTogether(); return; }
+    if (!code.includes('-')) code = code.replace(/(\d{2})$/, '-$1');
+    this.leave(true); this.unlock();
+    this.role = 'guest'; this.code = code; this.status = 'joining'; this.err = '';
+    this.peer = this.newPeer(); if (!this.peer) return;
+    this.peer.on('open', () => {
+      const c = this.peer.connect(this.peerId(code), { reliable: true });
+      this.attach(c);
+      setTimeout(() => { if (this.status === 'joining' && !this.connected()) this.fail("Couldn't reach that session. Check the code and that the other phone has Isai open."); }, 15000);
+    });
+    refreshTogether();
+  },
+  attach(c) {
+    this.conn = c;
+    c.on('open', () => { this.send({ t: 'hello', name: ME.name, avatar: ME.avatar }); });
+    c.on('data', d => this.onData(d));
+    c.on('close', () => { if (this.conn === c) this.onClose(); });
+    c.on('error', () => { });
+  },
+  send(m) { try { if (this.conn && this.conn.open) this.conn.send(m); } catch { } },
+  onData(d) {
+    if (!d || typeof d !== 'object') return;
+    if (d.t === 'hello') {
+      const first = !this.partner;
+      this.partner = { name: String(d.name || 'Friend').slice(0, 30), avatar: d.avatar };
+      this.status = 'connected';
+      if (first) {
+        this.send({ t: 'hello', name: ME.name, avatar: ME.avatar });
+        toast(`Listening with ${this.partner.name}`);
+        this.syncClock();
+        if (this.role === 'host') setTimeout(() => { if (Player.cur) this.broadcast(); }, 1200);
+        clearInterval(this.hb);
+        this.hb = setInterval(() => { if (this.connected() && this.controller === ME.name && !audio.paused) this.broadcast(); }, 4000);
+      }
+      refreshTogether();
+    } else if (d.t === 'ping') this.send({ t: 'pong', a: d.a, b: Date.now() });
+    else if (d.t === 'pong') this.onPong(d);
+    else if (d.t === 'state') this.applyRemote(d);
+    else if (d.t === 'react') { floatHeart(); toast(`${this.partner ? this.partner.name : 'They'} sent you a heart`, 1800); }
+    else if (d.t === 'busy') { this.fail('That session already has two people.'); }
+    else if (d.t === 'bye') this.onClose();
+  },
+  samples: [],
+  syncClock() {
+    this.samples = [];
+    for (let i = 0; i < 5; i++) setTimeout(() => this.send({ t: 'ping', a: Date.now() }), i * 250);
+  },
+  onPong(d) {
+    const now = Date.now(), rtt = now - d.a;
+    this.samples.push({ rtt, off: d.b - (d.a + rtt / 2) });
+    const best = this.samples.slice().sort((x, y) => x.rtt - y.rtt)[0];
+    this.offset = best.off;
+  },
+  wireItem(p) {
+    if (!p) return null;
+    if (p.type === 'song') return { type: 'song', key: p.key, title: p.title, artist: p.artist, album: p.album, duration: p.duration };
+    const c = Object.assign({}, p); delete c.desc; return c;
+  },
+  lastApplied: null, lastStateAt: 0,
+  matchesApplied() {
+    const la = this.lastApplied; if (!la) return false;
+    const cur = Player.cur, key = cur ? cur.key : null, playing = !audio.paused;
+    if (key !== la.key || playing !== la.playing) return false;
+    if (!cur || cur.type === 'radio') return true;
+    const expected = la.time + (la.playing ? (Date.now() - la.at) / 1000 : 0);
+    return Math.abs((audio.currentTime || 0) - expected) < 1.5;
+  },
+  localEvent() {
+    if (!this.connected() || this.isSilent()) return;
+    clearTimeout(this.bt);
+    this.bt = setTimeout(() => { if (!this.matchesApplied()) this.broadcast(); }, 250);
+  },
+  broadcast() {
+    if (!this.connected() || this.isSilent()) return;
+    const p = Player.cur;
+    this.controller = ME.name; this.missing = null; this.lastApplied = null; this.lastStateAt = Date.now();
+    this.send({ t: 'state', item: this.wireItem(p), playing: !!p && !audio.paused, time: audio.currentTime || 0, at: Date.now(), by: ME.name });
+    updateTogetherBar();
+  },
+  resolve(item) {
+    if (!item) return null;
+    if (item.type !== 'song') return item;
+    const norm = s => String(s || '').toLowerCase().normalize('NFKD').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+    const t = norm(item.title), a = norm(item.artist);
+    let hit = S.tracks.find(x => norm(x.title) === t && norm(x.artist) === a);
+    if (!hit) { const byTitle = S.tracks.filter(x => norm(x.title) === t); if (byTitle.length === 1) hit = byTitle[0]; }
+    return hit ? songP(hit) : null;
+  },
+  async applyRemote(s) {
+    const sentAt = s.at - this.offset;
+    if (sentAt < this.lastStateAt) return;
+    this.lastStateAt = sentAt;
+    this.controller = s.by;
+    const item = this.resolve(s.item);
+    const target = () => s.time + (s.playing ? Math.max(0, (Date.now() - sentAt) / 1000) : 0);
+    const mark = playing => { this.lastApplied = { key: item ? item.key : (Player.cur ? Player.cur.key : null), playing, time: item ? target() : (audio.currentTime || 0), at: Date.now() }; };
+    if (!s.item) { mark(false); audio.pause(); updateTogetherBar(); return; }
+    if (!item) {
+      mark(false);
+      if (!audio.paused) audio.pause();
+      if (!this.missing || this.missing.key !== s.item.key) toast(`You don't have "${s.item.title}". It's playing on ${s.by}'s phone.`, 4000);
+      this.missing = s.item; updateTogetherBar(); return;
+    }
+    this.missing = null;
+    mark(!!s.playing);
+    if (!Player.cur || Player.cur.key !== item.key || !Player.ready || this.isSilent()) {
+      Player.queue = [item]; Player.idx = 0; Player.original = null; Player.context = `Listening with ${s.by}`;
+      await Player.load(false);
+      await whenReady();
+    }
+    mark(!!s.playing);
+    if (item.type !== 'radio' && isFinite(audio.duration)) {
+      const t = target();
+      if (Math.abs(audio.currentTime - t) > 0.7) { try { audio.currentTime = Math.min(t, Math.max(0, audio.duration - 0.5)); } catch { } }
+    }
+    if (s.playing && audio.paused) audio.play().catch(() => toast('Tap play to join in', 2500));
+    else if (!s.playing && !audio.paused) audio.pause();
+    mark(!!s.playing);
+    updatePlayerUI(); updateTogetherBar();
+  },
+  react() { if (!this.connected()) return; this.send({ t: 'react' }); toast('Heart sent', 1200); },
+  onError(e) {
+    const type = e && e.type;
+    if (type === 'unavailable-id' && this.role === 'host') { this.host(); return; }
+    if (type === 'peer-unavailable') { this.fail('No session with that code. Check it and try again.'); return; }
+    if (this.connected()) return;
+    this.fail("Couldn't connect. Check your internet and try again.");
+  },
+  fail(msg) { const keepRole = this.role; this.leave(true); this.err = msg; this.status = 'idle'; this.role = keepRole === 'guest' ? null : null; refreshTogether(); toast(msg, 3500); },
+  onClose() {
+    const name = this.partner && this.partner.name;
+    this.leave(true);
+    if (name) toast(`${name} left the session`);
+  },
+  leave(silent = false) {
+    if (!silent) this.send({ t: 'bye' });
+    clearInterval(this.hb); clearTimeout(this.bt);
+    const c = this.conn, p = this.peer;
+    this.conn = null; this.peer = null; this.partner = null; this.controller = null; this.missing = null; this.lastApplied = null; this.lastStateAt = 0;
+    this.status = 'idle'; this.role = null; this.code = '';
+    try { c && c.close(); } catch { }
+    try { p && p.destroy(); } catch { }
+    updateTogetherBar(); refreshTogether();
+    if (Player.cur && Player.context && Player.context.startsWith('Listening with')) Player.context = 'Isai';
+  },
+};
+function whenReady() {
+  return new Promise(res => {
+    if (audio.readyState >= 1) return res();
+    const t = setTimeout(res, 8000);
+    audio.addEventListener('loadedmetadata', () => { clearTimeout(t); setTimeout(res, 60); }, { once: true });
+  });
+}
+function floatHeart() {
+  const h = document.createElement('div');
+  h.className = 'float-heart'; h.innerHTML = icon('heart-f');
+  h.style.left = (40 + Math.random() * 20) + '%';
+  document.body.appendChild(h);
+  setTimeout(() => h.remove(), 1800);
+}
+function updateTogetherBar() {
+  const bar = $('#together');
+  const on = Together.connected();
+  document.body.classList.toggle('together-on', on);
+  if (!on) { bar.classList.add('hidden'); return; }
+  bar.classList.remove('hidden');
+  const who = Together.partner.name;
+  const ctl = Together.missing ? `${esc(who)} is playing a song you don't have` : Together.controller === ME.name ? "You're choosing" : Together.controller ? `${esc(Together.controller)} is choosing` : 'Connected';
+  bar.innerHTML = `<button class="tg-main" data-a="together">${avatarHTML(Together.partner, 26)}<span class="tg-text"><b>With ${esc(who)}</b><span>${ctl}</span></span></button>
+    <button class="iconbtn" data-a="tg-heart" aria-label="Send a heart"><span class="acc">${icon('heart-f', 'sm')}</span></button>`;
+}
+let sheetKind = '';
+function togetherSheet() { sheetKind = 'together'; renderTogetherSheet(); }
+function refreshTogether() { if (sheetKind === 'together' && $('#sheet').classList.contains('on')) renderTogetherSheet(); updateTogetherBar(); }
+function renderTogetherSheet() {
+  const T = Together;
+  let h = `<div style="font-weight:700;font-size:18px;margin-bottom:4px">Listen together</div>`;
+  if (T.connected()) {
+    h += `<div class="sheet-head" style="border:0;margin-top:8px">${avatarHTML(T.partner, 48)}<div><div style="font-weight:600">Listening with ${esc(T.partner.name)}</div><div class="muted" style="font-size:13px">Play, pause, skip, and seek stay in sync on both phones.</div></div></div>
+      <button class="opt" data-a="tg-heart">${icon('heart-f')}Send a heart</button>
+      <button class="opt danger" data-a="tg-leave">${icon('x')}Leave session</button>`;
+  } else if (T.role === 'host') {
+    h += `<p class="muted" style="font-size:14px;margin:6px 0 14px">Share this code. When the other phone joins, whatever you play plays there too.</p>
+      <div class="tg-code">${T.status === 'starting' ? '<div class="spinner" style="margin:6px auto"></div>' : esc(T.code)}</div>
+      ${T.status === 'waiting' ? `<div style="display:flex;gap:10px;justify-content:center;margin:14px 0"><button class="btn primary small" data-a="tg-share">${icon('upload', 'sm')} Share code</button></div><p class="muted" style="text-align:center;font-size:13px">Waiting for someone to join…</p>` : ''}
+      <button class="opt danger" data-a="tg-leave">${icon('x')}Cancel</button>`;
+  } else if (T.status === 'joining') {
+    h += `<div class="spinner"></div><p class="muted" style="text-align:center;font-size:14px">Joining ${esc(T.code)}…</p><button class="opt danger" data-a="tg-leave">${icon('x')}Cancel</button>`;
+  } else {
+    h += `<p class="muted" style="font-size:14px;margin:6px 0 16px">Listen to the same thing at the same time on two phones, wherever you both are.</p>
+      <button class="btn primary" style="width:100%" data-a="tg-host">${icon('users', 'sm')} Start a session</button>
+      <div class="muted" style="text-align:center;font-size:13px;margin:16px 0 10px">or join one</div>
+      <form data-f="tg-join" style="display:flex;gap:8px"><input id="tg-code" class="tg-input" placeholder="RAGA-42" autocomplete="off" autocapitalize="characters" spellcheck="false" enterkeyhint="go"><button class="btn ghost" type="submit">Join</button></form>
+      ${T.err ? `<p style="color:var(--danger);font-size:13px;margin-top:10px">${esc(T.err)}</p>` : ''}
+      <p class="dim" style="font-size:12px;margin-top:16px">Podcasts, radio, and Discover music play on both phones. Your own songs play only if both phones have the same song.</p>`;
+  }
+  openSheet(h);
+}
+
 /* ---------- boot ---------- */
-async function boot() {
+function boot() {
+  let id = null;
+  try { id = sessionStorage.getItem('isai-profile'); } catch { }
+  if (id && PROFILES.some(p => p.id === id)) start(id);
+  else showPicker(false);
+  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => { });
+}
+async function start(id) {
+  ME = PROFILES.find(p => p.id === id);
+  DB.name = dbNameFor(id);
   try { await DB.open(); }
   catch { $('#view').innerHTML = emptyHTML('x', 'Storage unavailable', 'Isai needs browser storage. Turn off private browsing and try again.'); return; }
   const [tracks, liked, playlists, podcasts, progress, recent, radioFavs, epDl, settings, player] = await Promise.all(
@@ -1371,6 +1750,5 @@ async function boot() {
   history.replaceState({ l: 0 }, '');
   render();
   updatePlayerUI();
-  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => { });
 }
 boot();

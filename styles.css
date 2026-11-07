@@ -167,3 +167,37 @@ input[type=range]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;bac
   .tiles{grid-template-columns:repeat(4,1fr)}
   #mini{max-width:804px;margin:0 auto}
 }
+
+/* profiles */
+.avatar{display:inline-block;border-radius:16%;overflow:hidden;flex-shrink:0;background:#2a2a2a;vertical-align:middle}
+.avatar svg,.avatar img{width:100%;height:100%;display:block;object-fit:cover}
+#picker{position:fixed;inset:0;z-index:45;background:var(--bg);display:flex;align-items:center;justify-content:center;padding:24px}
+.pk-inner{display:flex;flex-direction:column;align-items:center;gap:26px;text-align:center}
+.pk-inner h1{margin:0;font-size:24px;font-weight:600}
+.pk-row{display:flex;gap:28px;flex-wrap:wrap;justify-content:center}
+.pk-item{display:flex;flex-direction:column;align-items:center;gap:10px;color:var(--muted)}
+.pk-item:active .avatar,.pk-item:hover .avatar{outline:3px solid var(--text);outline-offset:2px}
+.pk-item:hover{color:var(--text)}
+.pk-av{position:relative;display:block}
+.pk-edit{position:absolute;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;border-radius:16%;color:#fff}
+.pk-name{font-size:15px}
+.me-btn{border-radius:50%;padding:2px}
+.me-btn .avatar{border-radius:50%}
+h1.welcome{font-size:22px;font-weight:700;margin:2px 0 16px;letter-spacing:-.2px}
+.av-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:12px}
+.av-opt{border-radius:14px;padding:3px}
+.av-opt.on{outline:3px solid var(--acc)}
+/* listen together */
+#together{position:fixed;top:calc(env(safe-area-inset-top,0px) + 8px);left:50%;transform:translateX(-50%);z-index:30;background:#2c2c2c;border-radius:999px;display:flex;align-items:center;gap:2px;padding:4px 4px 4px 6px;box-shadow:0 4px 16px rgba(0,0,0,.4);max-width:calc(100vw - 24px)}
+.tg-main{display:flex;align-items:center;gap:8px;min-width:0;padding-right:4px}
+.tg-main .avatar{border-radius:50%}
+.tg-text{display:flex;flex-direction:column;line-height:1.2;font-size:12px;min-width:0;text-align:left}
+.tg-text b{font-size:13px}
+.tg-text span{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+body.together-on #view{padding-top:64px}
+.tg-code{font-size:34px;font-weight:800;letter-spacing:3px;text-align:center;background:var(--card);border-radius:12px;padding:18px 10px;color:var(--acc)}
+.tg-input{flex:1;background:var(--card);border:1px solid var(--line);border-radius:999px;padding:10px 16px;outline:0;text-transform:uppercase;letter-spacing:1px}
+.tg-input:focus{border-color:var(--acc)}
+.float-heart{position:fixed;bottom:30%;z-index:70;color:#E24B4A;pointer-events:none;animation:floatup 1.8s ease-out forwards}
+.float-heart .icon{width:56px;height:56px}
+@keyframes floatup{0%{transform:translateY(0) scale(.6);opacity:0}15%{opacity:1;transform:translateY(-20px) scale(1.1)}100%{transform:translateY(-260px) scale(1);opacity:0}}
