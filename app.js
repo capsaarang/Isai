@@ -1,7 +1,7 @@
 'use strict';
 /* Isai: personal music and podcast player. All data stays on this device. */
 
-const VERSION = '1.3.0';
+const VERSION = '1.3.1';
 const DEFAULT_JAMENDO = '339d4597';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -1559,13 +1559,14 @@ const Together = {
     });
   },
   async send(m) {
-    if (!this.key || !this.clients.length) return;
+    const clients = this.clients, key = this.key, topic = this.topic, from = this.myId;
+    if (!key || !clients.length) return;
     try {
-      const body = new TextEncoder().encode(JSON.stringify(Object.assign({}, m, { _f: this.myId, _id: uid() })));
+      const body = new TextEncoder().encode(JSON.stringify(Object.assign({}, m, { _f: from, _id: uid() })));
       const iv = crypto.getRandomValues(new Uint8Array(12));
-      const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, this.key, body);
+      const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, body);
       const payload = JSON.stringify({ i: toB64(iv), c: toB64(ct) });
-      for (const c of this.clients) if (c.connected) c.publish(this.topic, payload, { qos: 0 });
+      for (const c of clients) if (c.connected) c.publish(topic, payload, { qos: 0 });
     } catch { }
   },
   async onRaw(payload) {
