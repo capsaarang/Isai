@@ -1,7 +1,7 @@
 'use strict';
 /* Isai: personal music and podcast player. All data stays on this device. */
 
-const VERSION = '1.3.1';
+const VERSION = '1.4.0';
 const DEFAULT_JAMENDO = '339d4597';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -202,14 +202,27 @@ const Player = {
     let src = null;
     try {
       if (p.type === 'song') {
-        const b = await DB.get('blobs', p.id);
+        let b = await DB.get('blobs', p.id);
+        const t = trackById(p.id);
+        if (!b && t && t.source === 'gdrive') {
+          if (!navigator.onLine) throw new Error('offline');
+          if (!Drive.cache.has(t.driveId)) toast('Loading from Google Drive…', 0);
+          b = await Drive.songBlob(t);
+          toast('', 1);
+        }
         if (!b) throw new Error('missing');
         src = this.objURL = URL.createObjectURL(b);
       } else if (p.type === 'episode' && S.epDl[p.id]) {
         const b = await DB.get('blobs', 'ep:' + p.id);
         src = b ? (this.objURL = URL.createObjectURL(b)) : p.url;
       } else src = p.url;
-    } catch { toast("Couldn't open this song"); return; }
+    } catch (e) {
+      toast('', 1);
+      if (e && e.message === 'gdrive-auth') { if (document.hidden) toast('Open Isai to reconnect Google Drive'); else driveAuthSheet('play'); }
+      else if (e && e.message === 'offline') toast("You're offline. Save Drive songs for offline to play them anywhere.", 3500);
+      else toast("Couldn't open this song");
+      return;
+    }
     audio.src = src;
     const rate = p.type === 'episode' ? this.speed : 1;
     audio.defaultPlaybackRate = rate; audio.playbackRate = rate;
@@ -224,6 +237,7 @@ const Player = {
     updatePlayerUI(); updateMediaSession(); saveState();
     markPlayingRows();
     Together.localEvent();
+    Drive.prefetchNext();
   },
   toggle() {
     if (!this.cur) return;
@@ -293,7 +307,11 @@ audio.addEventListener('timeupdate', () => {
 audio.addEventListener('play', () => { if (Together.isSilent()) return; updatePlayerUI(); Together.localEvent(); });
 audio.addEventListener('pause', () => { if (Together.isSilent()) return; updatePlayerUI(); saveState(); Together.localEvent(); });
 audio.addEventListener('seeked', () => Together.localEvent());
-audio.addEventListener('loadedmetadata', () => { updateProgressUI(); updateMediaSession(); });
+audio.addEventListener('loadedmetadata', () => {
+  updateProgressUI(); updateMediaSession();
+  const p = Player.cur, t = p && p.type === 'song' && trackById(p.id);
+  if (t && !t.duration && isFinite(audio.duration)) { t.duration = audio.duration; DB.put('tracks', t.id, t).catch(() => { }); }
+});
 audio.addEventListener('ended', () => {
   if (Together.isSilent()) return;
   const p = Player.cur;
@@ -477,7 +495,9 @@ function reg(items, ctx) { const id = 'l' + Object.keys(S.lists).length; S.lists
 function rowsHTML(items, ctx, opts = {}) {
   const L = reg(items, ctx);
   return `<div class="list">${items.map((p, i) => {
-    const sub = p.type === 'radio' ? esc(p.sub || 'Radio') : esc(p.sub || '') + (opts.dur && p.duration ? ' · ' + fmt(p.duration) : '');
+    const tr = p.type === 'song' ? trackById(p.id) : null;
+    const mark = tr && tr.source === 'gdrive' ? (tr.offline ? `<span class="acc src-mark" title="Saved offline">${icon('check', 'sm')}</span>` : `<span class="dim src-mark" title="Google Drive">${icon('cloud', 'sm')}</span>`) : '';
+    const sub = p.type === 'radio' ? esc(p.sub || 'Radio') : mark + esc(p.sub || '') + (opts.dur && p.duration ? ' · ' + fmt(p.duration) : '');
     const right = p.type === 'radio'
       ? `<button class="more" data-a="fav-radio" data-l="${L}" data-i="${i}" aria-label="Favorite">${S.radioFavs.some(s => s.key === p.key) ? `<span class="acc">${icon('star-f', 'sm')}</span>` : icon('star', 'sm')}</button>`
       : `<button class="more" data-a="more" data-l="${L}" data-i="${i}" aria-label="More">${icon('dotsv', 'sm')}</button>`;
@@ -627,7 +647,7 @@ function renderSearchResults() {
 
 Views.library = () => {
   const right = `<button class="iconbtn" data-a="import" aria-label="Add songs">${icon('plus')}</button>`;
-  const chips = [['songs', 'Songs'], ['albums', 'Albums'], ['artists', 'Artists'], ['playlists', 'Playlists']]
+  const chips = [['songs', 'Songs'], ['albums', 'Albums'], ['artists', 'Artists'], ['playlists', 'Playlists'], ...(S.tracks.some(t => t.source === 'gdrive') ? [['phone', 'On this phone']] : [])]
     .map(([k, l]) => `<button class="chip ${S.libTab === k ? 'on' : ''}" data-a="libtab" data-t="${k}">${l}</button>`).join('');
   let h = topbar('Your library', { right }) + `<div class="chips">${chips}</div>`;
   if (S.libTab === 'playlists') {
@@ -636,7 +656,13 @@ Views.library = () => {
     h += S.playlists.map(pl => `<button class="row" data-a="go" data-v="playlist" data-p="${esc(pl.id)}">${artHTML(plCover(pl), '', 46)}<div class="meta"><div class="t ellipsis">${esc(pl.name)}</div><div class="s">Playlist · ${pl.ids.length} songs</div></div></button>`).join('');
     return h;
   }
-  if (!S.tracks.length) return h + emptyHTML('music', 'Add your first songs', 'Pick songs from your Rajan folder. They get copied into Isai so they play offline.', `<button class="btn primary" data-a="import">${icon('upload', 'sm')} Add songs</button>`);
+  if (!S.tracks.length) return h + emptyHTML('music', 'Add your first songs', 'Stream your music from Google Drive, or add songs from this phone.', `<div style="display:flex;flex-direction:column;gap:10px;align-items:center"><button class="btn primary" data-a="${Drive.connected() ? 'drive-scan' : 'drive-connect'}">${icon('cloud', 'sm')} ${Drive.connected() ? 'Scan Google Drive' : 'Connect Google Drive'}</button><button class="btn ghost" data-a="import">${icon('upload', 'sm')} Add from this phone</button></div>`);
+  if (S.libTab === 'phone') {
+    const on = songsSorted().filter(t => t.source !== 'gdrive' || t.offline).map(songP);
+    h += `<div class="muted" style="font-size:13px;margin-bottom:4px">${on.length} song${on.length === 1 ? '' : 's'} ${on.length === 1 ? 'plays' : 'play'} without internet</div>`;
+    h += on.length ? rowsHTML(on, 'On this phone', { dur: true }) : emptyHTML('download', 'Nothing saved yet', 'Use Save offline on any Google Drive song, album, or playlist.');
+    return h;
+  }
   if (S.libTab === 'songs') {
     h += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><span class="muted" style="font-size:13px">${S.tracks.length} songs</span><button class="btn small primary" data-a="shuffle-all">${icon('shuffle', 'sm')} Shuffle</button></div>`;
     h += rowsHTML(songsSorted().map(songP), 'Your library', { dur: true });
@@ -653,6 +679,9 @@ function heroHTML(p, title, sub, round = false) {
   return `<div class="hero">${artHTML(p, '', 200).replace('class="art ', `style="width:200px;height:200px;${round ? 'border-radius:50%' : ''}" class="art `)}<h2>${esc(title)}</h2><div class="muted" style="font-size:14px">${esc(sub)}</div></div>`;
 }
 function playBar(L, extra = '') {
+  const l = S.lists[L];
+  const hasCloud = l && l.items.some(p => { const t = p.type === 'song' && trackById(p.id); return t && t.source === 'gdrive' && !t.offline; });
+  if (hasCloud) extra += `<button class="iconbtn" data-a="save-list" data-l="${L}" aria-label="Save offline">${icon('download')}</button>`;
   return `<div class="actions">${extra}<button class="iconbtn" data-a="shuffle-list" data-l="${L}" aria-label="Shuffle">${icon('shuffle')}</button><button class="playfab" data-a="play" data-l="${L}" data-i="0" aria-label="Play">${icon('play', 'lg')}</button></div>`;
 }
 Views.album = name => {
@@ -1021,6 +1050,18 @@ Views.settings = async () => {
       <div class="field"><label for="s-relay">Podcast relay URL (optional)</label><input id="s-relay" value="${esc(S.settings.relay)}" placeholder="https://isai-relay.yourname.workers.dev" autocomplete="off" spellcheck="false" inputmode="url"></div>
       <button class="btn primary" type="submit">Save</button>
     </form>
+    <div class="section-title">Google Drive</div>
+    ${Drive.connected() ? `
+      <div class="setting-row"><span>Account</span><span class="muted ellipsis" style="max-width:60%">${esc(S.settings.gdrive.email)}</span></div>
+      <div class="setting-row"><span>Music folder</span><button class="acc" data-a="drive-folder">${esc(S.settings.gdrive.folderName || 'Choose')}</button></div>
+      <div class="setting-row"><span>Songs from Drive</span><span class="muted">${S.tracks.filter(t => t.source === 'gdrive').length} (${S.tracks.filter(t => t.source === 'gdrive' && t.offline).length} offline)</span></div>
+      <div class="setting-row"><span>Last scanned</span><span class="muted">${S.settings.gdrive.lastScan ? esc(relDate(S.settings.gdrive.lastScan)) + ' ' + new Date(S.settings.gdrive.lastScan).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : 'Not yet'}</span></div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px">
+        <button class="btn small primary" data-a="drive-scan">${icon('refresh', 'sm')} Scan for new songs</button>
+        <button class="btn small ghost" data-a="drive-disconnect">Disconnect</button>
+      </div>` : `
+      <p class="muted" style="font-size:13px">Stream your music from a Google Drive folder without using phone storage. Isai can only read files, never change or delete them.</p>
+      <button class="btn primary" data-a="drive-connect">${icon('cloud', 'sm')} Connect Google Drive</button>`}
     <div class="section-title">Storage</div>
     <div class="setting-row"><span>Songs</span><span class="muted">${S.tracks.length}</span></div>
     <div class="setting-row"><span>Downloaded episodes</span><span class="muted">${Object.keys(S.epDl).length}</span></div>
@@ -1110,11 +1151,12 @@ function itemSheet(p, plId) {
   if (p.type !== 'radio') { h += opt('s-next', 'next-q', 'Play next') + opt('s-queue', 'list', 'Add to queue'); }
   if (p.type === 'song') {
     const t = trackById(p.id);
+    if (t && t.source === 'gdrive') h += t.offline ? opt('s-unoffline', 'trash', 'Remove offline copy') : opt('s-offline', 'download', 'Save offline');
     h += opt('s-addpl', 'plus', 'Add to playlist');
     h += opt('s-like', S.liked.has(p.id) ? 'heart-f' : 'heart', S.liked.has(p.id) ? 'Remove from liked songs' : 'Add to liked songs');
     if (t) { h += opt('s-album', 'album', 'Go to album') + opt('s-artist', 'user', 'Go to artist'); }
     if (plId && plId !== 'liked') h += opt('s-unpl', 'x', 'Remove from this playlist', `data-p="${esc(plId)}"`);
-    h += opt('s-delete', 'trash', 'Remove from library', '', 'danger');
+    h += opt('s-delete', 'trash', t && t.source === 'gdrive' ? 'Hide from Isai (stays in Drive)' : 'Remove from library', '', 'danger');
   } else if (p.type === 'remote') {
     h += opt('s-save', 'download', S.tracks.some(t => t.remoteKey === p.key) ? 'Saved in library' : 'Save to library');
   } else if (p.type === 'episode') {
@@ -1277,6 +1319,21 @@ const A = {
   },
   'clear-recent': async () => { S.recent = []; await saveKV.recent(); toast('Cleared'); },
   'switch-profile': () => switchProfile(),
+  'drive-connect': d => Drive.connect(d.p && typeof d.p === 'string' ? d.p : 'setup'),
+  'drive-scan': () => { if (!Drive.connected()) return Drive.connect('setup'); if (!S.settings.gdrive.folderId) return driveFolderSheet(); driveScan(); },
+  'drive-folder': () => driveFolderSheet(),
+  'drive-disconnect': async () => {
+    if (!confirm('Disconnect Google Drive? Drive songs disappear from Isai on this phone, except ones saved offline. Nothing in your Drive changes.')) return;
+    const t = Drive.token();
+    if (t) fetch('https://oauth2.googleapis.com/revoke?token=' + encodeURIComponent(t), { method: 'POST' }).catch(() => { });
+    Drive.clearToken();
+    for (const tr of S.tracks.filter(x => x.source === 'gdrive' && !x.offline)) await deleteTrack(tr.id);
+    S.settings.gdrive = null; await saveKV.settings();
+    toast('Google Drive disconnected'); rerenderKeepScroll();
+  },
+  's-offline': () => { const t = trackById(sheetItem.id); closeSheet(); saveOffline(t); },
+  's-unoffline': () => { const t = trackById(sheetItem.id); closeSheet(); removeOffline(t); },
+  'save-list': d => { const l = S.lists[d.l]; if (l) saveListOffline(l.items); },
   together: () => togetherSheet(),
   'tg-host': () => Together.host(),
   'tg-leave': () => { Together.leave(); closeSheet(); },
@@ -1329,6 +1386,7 @@ document.addEventListener('click', e => {
 document.addEventListener('submit', async e => {
   const f = e.target.dataset.f; if (!f) return;
   e.preventDefault();
+  if (f === 'drive-folder') { const v = $('#drive-folder').value; $('#drive-folder').blur(); useDriveFolder(v); return; }
   if (f === 'tg-join') { const v = $('#tg-code').value; $('#tg-code').blur(); Together.join(v); return; }
   if (f === 'disc') { const q = $('#dq').value.trim(); $('#dq').blur(); runDiscover(q); }
   if (f === 'podsearch') { const q = $('#pq').value.trim(); $('#pq').blur(); if (q) runPodSearch(q); }
@@ -1384,6 +1442,225 @@ document.addEventListener('keydown', e => {
   else if (e.key === 'ArrowLeft' && e.shiftKey) Player.prev();
 });
 document.addEventListener('visibilitychange', () => { if (document.hidden) saveState(); });
+
+/* ---------- google drive ---------- */
+const GDRIVE_CLIENT_ID = '59416505369-4iqnmjv8pgsvahurv8r6mvon8g2g7ljh.apps.googleusercontent.com';
+const GDRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
+const GDRIVE_REDIRECT = location.hostname === 'capsaarang.github.io' ? 'https://capsaarang.github.io/Isai/' : location.origin + location.pathname.replace(/index\.html$/, '');
+const AUDIO_MIME_RE = /^audio\//;
+let drivePending = null;
+const Drive = {
+  cache: new Map(),
+  tokKey() { return 'isai-gtoken-' + (ME ? ME.id : 'x'); },
+  token() {
+    try { const t = JSON.parse(localStorage.getItem(this.tokKey()) || 'null'); if (t && t.exp > Date.now() + 60000) return t.token; } catch { }
+    return null;
+  },
+  clearToken() { try { localStorage.removeItem(this.tokKey()); } catch { } },
+  connected() { return !!(S.settings.gdrive && S.settings.gdrive.email); },
+  connect(pending = 'setup') {
+    const nonce = uid();
+    try { sessionStorage.setItem('isai-gauth', JSON.stringify({ nonce, profile: ME.id, pending })); } catch { }
+    try { audio.pause(); saveState(); } catch { }
+    const g = S.settings.gdrive;
+    const q = new URLSearchParams({ client_id: GDRIVE_CLIENT_ID, redirect_uri: GDRIVE_REDIRECT, response_type: 'token', scope: GDRIVE_SCOPE, include_granted_scopes: 'true', state: nonce });
+    if (g && g.email) q.set('login_hint', g.email); else q.set('prompt', 'select_account consent');
+    location.href = 'https://accounts.google.com/o/oauth2/v2/auth?' + q.toString();
+  },
+  async api(path, params) {
+    const t = this.token(); if (!t) throw new Error('gdrive-auth');
+    const r = await fetch('https://www.googleapis.com/drive/v3/' + path + (params ? '?' + new URLSearchParams(params) : ''), { headers: { Authorization: 'Bearer ' + t } });
+    if (r.status === 401) { this.clearToken(); throw new Error('gdrive-auth'); }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  },
+  async fileBlob(id, range) {
+    const t = this.token(); if (!t) throw new Error('gdrive-auth');
+    const headers = { Authorization: 'Bearer ' + t }; if (range) headers.Range = range;
+    const r = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?alt=media`, { headers });
+    if (r.status === 401) { this.clearToken(); throw new Error('gdrive-auth'); }
+    if (!r.ok && r.status !== 206) throw new Error('HTTP ' + r.status);
+    return r.blob();
+  },
+  async songBlob(t) {
+    if (this.cache.has(t.driveId)) { const b = this.cache.get(t.driveId); this.cache.delete(t.driveId); this.cache.set(t.driveId, b); return b; }
+    const b = await this.fileBlob(t.driveId);
+    this.cache.set(t.driveId, b);
+    while (this.cache.size > 4) this.cache.delete(this.cache.keys().next().value);
+    return b;
+  },
+  prefetchNext() {
+    const n = Player.queue[Player.idx + 1];
+    if (!n || n.type !== 'song' || !this.token()) return;
+    const t = trackById(n.id);
+    if (!t || t.source !== 'gdrive' || this.cache.has(t.driveId)) return;
+    DB.get('blobs', t.id).then(b => { if (!b) this.songBlob(t).catch(() => { }); });
+  },
+  qEsc(s) { return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'"); },
+  async findFolders(name) {
+    const d = await this.api('files', { q: `mimeType='application/vnd.google-apps.folder' and name='${this.qEsc(name)}' and trashed=false`, fields: 'files(id,name,modifiedTime)', pageSize: '20', spaces: 'drive' });
+    return d.files || [];
+  },
+  async listAudio(folderId, onProgress) {
+    const out = [], folders = [folderId], seenFolders = new Set();
+    while (folders.length) {
+      const fid = folders.shift();
+      if (seenFolders.has(fid)) continue; seenFolders.add(fid);
+      let pageToken = '';
+      do {
+        const params = { q: `'${this.qEsc(fid)}' in parents and trashed=false`, fields: 'nextPageToken,files(id,name,mimeType,size)', pageSize: '1000', spaces: 'drive' };
+        if (pageToken) params.pageToken = pageToken;
+        const d = await this.api('files', params);
+        for (const f of d.files || []) {
+          if (f.mimeType === 'application/vnd.google-apps.folder') folders.push(f.id);
+          else if (AUDIO_MIME_RE.test(f.mimeType || '') || AUDIO_RE.test(f.name)) out.push(f);
+        }
+        if (onProgress) onProgress(out.length);
+        pageToken = d.nextPageToken || '';
+      } while (pageToken);
+    }
+    return out;
+  },
+};
+function tagsToTrack(tags, fileName) {
+  const clean = s => (s == null ? '' : String(s)).replace(/\0/g, '').trim();
+  const base = fileName.replace(/\.[^.]+$/, '');
+  let title = clean(tags.title), artist = clean(tags.artist);
+  if (!title) {
+    const m = base.match(/^(?:\d+[\s._-]+)?(.+?)\s+-\s+(.+)$/);
+    if (m && !artist) { artist = m[1]; title = m[2]; } else title = base.replace(/^\d+[\s._-]+/, '');
+  }
+  return { title, artist: artist || 'Unknown artist', album: clean(tags.album) || 'Unknown album', year: clean(tags.year), track: parseInt(tags.track) || 0 };
+}
+function handleDriveRedirect() {
+  const h = location.hash || '';
+  if (!/access_token=|error=/.test(h)) return;
+  const p = new URLSearchParams(h.slice(1));
+  let st = null;
+  try { st = JSON.parse(sessionStorage.getItem('isai-gauth') || 'null'); sessionStorage.removeItem('isai-gauth'); } catch { }
+  history.replaceState(null, '', location.pathname + location.search);
+  if (!st || p.get('state') !== st.nonce) return;
+  try { sessionStorage.setItem('isai-profile', st.profile); } catch { }
+  if (p.get('access_token')) {
+    const exp = Date.now() + (parseInt(p.get('expires_in')) || 3600) * 1000;
+    try { localStorage.setItem('isai-gtoken-' + st.profile, JSON.stringify({ token: p.get('access_token'), exp })); } catch { }
+    drivePending = st.pending || 'setup';
+  } else {
+    drivePending = 'denied';
+  }
+}
+async function runDrivePending() {
+  const what = drivePending; drivePending = null;
+  if (!what) return;
+  if (what === 'denied') { toast("Google Drive wasn't connected", 3000); return; }
+  try {
+    const me = await Drive.api('about', { fields: 'user(emailAddress,displayName)' });
+    S.settings.gdrive = Object.assign({}, S.settings.gdrive || {}, { email: me.user && me.user.emailAddress });
+    await saveKV.settings();
+    if (what === 'play') { toast('Google Drive reconnected. Tap play to continue.', 3000); return; }
+    if (!S.settings.gdrive.folderId) { await useDriveFolder('Isai', true); return; }
+    if (what === 'scan' || what === 'setup') driveScan();
+  } catch (e) {
+    toast(e.message === 'gdrive-auth' ? "Google sign-in didn't finish. Try again." : "Couldn't reach Google Drive. Check your internet.", 3500);
+  }
+}
+async function useDriveFolder(name, auto = false) {
+  name = String(name || '').trim(); if (!name) return;
+  try {
+    const found = await Drive.findFolders(name);
+    if (!found.length) {
+      if (auto) driveFolderSheet(`No folder named "${name}" in this Google Drive yet. Type the folder that has your music.`);
+      else toast(`No folder named "${name}" found`, 3000);
+      return;
+    }
+    const f = found[0];
+    S.settings.gdrive = Object.assign({}, S.settings.gdrive, { folderId: f.id, folderName: f.name });
+    await saveKV.settings();
+    closeSheet();
+    toast(`Using "${f.name}" from Google Drive`, 1800);
+    setTimeout(driveScan, 300);
+  } catch (e) {
+    if (e.message === 'gdrive-auth') return driveAuthSheet('scan');
+    toast("Couldn't reach Google Drive. Check your internet.", 3000);
+  }
+}
+function driveFolderSheet(msg = '') {
+  openSheet(`<div style="font-weight:700;font-size:17px;margin-bottom:6px">Music folder in Google Drive</div>
+    <p class="muted" style="font-size:14px;margin:0 0 14px">${esc(msg || 'Type the name of the Drive folder with your music. Folders inside it are included too.')}</p>
+    <form data-f="drive-folder" style="display:flex;gap:8px"><input id="drive-folder" class="tg-input" style="text-transform:none;letter-spacing:0" value="${esc((S.settings.gdrive && S.settings.gdrive.folderName) || 'Isai')}" autocomplete="off" spellcheck="false"><button class="btn primary" type="submit">Use</button></form>`);
+}
+function driveAuthSheet(pending = 'play') {
+  openSheet(`<div style="font-weight:700;font-size:17px;margin-bottom:6px">Reconnect Google Drive</div>
+    <p class="muted" style="font-size:14px;margin:0 0 16px">Google asks Isai to sign in again about once an hour. It takes a few seconds, and you'll come right back here.</p>
+    <button class="btn primary" style="width:100%" data-a="drive-connect" data-p="${esc(pending)}">Reconnect</button>`);
+}
+let scanning = false;
+async function driveScan() {
+  const g = S.settings.gdrive;
+  if (!g || !g.folderId || scanning) return;
+  if (!Drive.token()) return driveAuthSheet('scan');
+  scanning = true;
+  try {
+    toast(`Looking in "${g.folderName}"…`, 0);
+    const files = await Drive.listAudio(g.folderId, n => toast(`Found ${n} songs…`, 0));
+    const existing = new Map(S.tracks.filter(t => t.source === 'gdrive').map(t => [t.driveId, t]));
+    const ids = new Set(files.map(f => f.id));
+    let removed = 0, added = 0;
+    for (const t of existing.values()) if (!ids.has(t.driveId)) { await deleteTrack(t.id); removed++; }
+    const todo = files.filter(f => !existing.has(f.id));
+    for (let i = 0; i < todo.length; i++) {
+      const f = todo[i];
+      toast(`Adding songs from Drive ${i + 1} of ${todo.length}`, 0);
+      let tags = {};
+      try { const head = await Drive.fileBlob(f.id, 'bytes=0-524287'); tags = await readTags(new File([head], f.name, { type: head.type || f.mimeType })); }
+      catch (e) { if (e.message === 'gdrive-auth') throw e; }
+      const id = 'g' + uid();
+      let hasArt = false;
+      if (tags.picture && tags.picture.data && tags.picture.data.length) {
+        try { await DB.put('art', id, new Blob([new Uint8Array(tags.picture.data)], { type: tags.picture.format || 'image/jpeg' })); hasArt = true; } catch { }
+      }
+      const t = Object.assign(tagsToTrack(tags, f.name), { id, duration: 0, addedAt: Date.now() + i, hasArt, source: 'gdrive', driveId: f.id, size: +f.size || 0, fileKey: 'gdrive|' + f.id, offline: false });
+      await DB.put('tracks', id, t);
+      S.tracks.push(t); added++;
+      if (i % 10 === 9) await sleep(0);
+    }
+    g.lastScan = Date.now(); await saveKV.settings();
+    toast(added || removed ? `Google Drive: ${added} added${removed ? `, ${removed} removed` : ''}` : 'Google Drive is up to date', 3000);
+  } catch (e) {
+    if (e.message === 'gdrive-auth') { toast('', 1); driveAuthSheet('scan'); }
+    else toast("Couldn't finish reading Google Drive. Check your internet and try Scan again.", 3500);
+  } finally { scanning = false; rerenderKeepScroll(); }
+}
+async function saveOffline(t) {
+  if (!t || t.source !== 'gdrive') return;
+  if (!Drive.token()) return driveAuthSheet('play');
+  toast('Saving for offline…', 0);
+  try {
+    const b = await Drive.songBlob(t);
+    await DB.put('blobs', t.id, b);
+    t.offline = true; await DB.put('tracks', t.id, t);
+    toast('Available offline'); requestPersist(); rerenderKeepScroll();
+  } catch (e) {
+    if (e.message === 'gdrive-auth') driveAuthSheet('play'); else toast("Couldn't save. Check your internet.", 3000);
+  }
+}
+async function removeOffline(t) {
+  if (!t) return;
+  await DB.del('blobs', t.id);
+  t.offline = false; await DB.put('tracks', t.id, t);
+  toast('Removed from this phone. It still plays from Drive.', 2500); rerenderKeepScroll();
+}
+async function saveListOffline(items) {
+  const list = items.map(p => p.type === 'song' && trackById(p.id)).filter(t => t && t.source === 'gdrive' && !t.offline);
+  if (!list.length) { toast('Already available offline'); return; }
+  if (!Drive.token()) return driveAuthSheet('play');
+  for (let i = 0; i < list.length; i++) {
+    toast(`Saving offline ${i + 1} of ${list.length}`, 0);
+    try { const b = await Drive.fileBlob(list[i].driveId); await DB.put('blobs', list[i].id, b); list[i].offline = true; await DB.put('tracks', list[i].id, list[i]); }
+    catch (e) { if (e.message === 'gdrive-auth') { driveAuthSheet('play'); return; } }
+  }
+  toast(`Saved ${list.length} song${list.length === 1 ? '' : 's'} for offline`, 2500); requestPersist(); rerenderKeepScroll();
+}
 
 /* ---------- profiles ---------- */
 const DEFAULT_PROFILES = [{ id: 'captain', name: 'Captain', avatar: 'captain' }, { id: 'donna', name: 'Donna', avatar: 'donna' }];
@@ -1790,6 +2067,7 @@ function renderTogetherSheet() {
 
 /* ---------- boot ---------- */
 function boot() {
+  handleDriveRedirect();
   let id = null;
   try { id = sessionStorage.getItem('isai-profile'); } catch { }
   if (id && PROFILES.some(p => p.id === id)) start(id);
@@ -1824,6 +2102,7 @@ async function start(id) {
     }
   }
   history.replaceState({ l: 0 }, '');
+  if (drivePending) setTimeout(runDrivePending, 400);
   render();
   updatePlayerUI();
 }
