@@ -1,7 +1,7 @@
 'use strict';
 /* Isai: personal music and podcast player. All data stays on this device. */
 
-const VERSION = '1.8.1';
+const VERSION = '1.9.0';
 const DEFAULT_JAMENDO = '339d4597';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -300,7 +300,6 @@ function saveState() {
 function addRecent(p) {
   p = Object.assign({}, p, { at: Date.now(), sk: pKey(p) || p.key });
   S.recent = [p, ...S.recent.filter(x => x.key !== p.key)].slice(0, 20);
-  Sync.soon();
   saveKV.recent();
 }
 
@@ -565,9 +564,9 @@ function sortTracks(list) {
 }
 const matchFilter = (...vals) => { const q = S.libFilter.trim().toLowerCase(); return !q || vals.some(v => String(v || '').toLowerCase().includes(q)); };
 function smartList(kind) {
-  if (kind === 'most') { const tp = Stats.totalPlays(); return S.tracks.filter(t => (tp[songKeyOf(t)] || {}).n).sort((a, b) => tp[songKeyOf(b)].n - tp[songKeyOf(a)].n).slice(0, 50); }
+  if (kind === 'most') { const tp = Stats.totalPlays('me'); return S.tracks.filter(t => (tp[songKeyOf(t)] || {}).n).sort((a, b) => tp[songKeyOf(b)].n - tp[songKeyOf(a)].n).slice(0, 50); }
   if (kind === 'recent') return S.tracks.slice().sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0)).slice(0, 50);
-  if (kind === 'forgotten') { const tp = Stats.totalPlays(), cut = Date.now() - 30 * 864e5; return S.tracks.filter(t => { const p = tp[songKeyOf(t)]; return p && p.last < cut; }).sort((a, b) => tp[songKeyOf(a)].last - tp[songKeyOf(b)].last).slice(0, 50); }
+  if (kind === 'forgotten') { const tp = Stats.totalPlays('me'), cut = Date.now() - 30 * 864e5; return S.tracks.filter(t => { const p = tp[songKeyOf(t)]; return p && p.last < cut; }).sort((a, b) => tp[songKeyOf(a)].last - tp[songKeyOf(b)].last).slice(0, 50); }
   return [];
 }
 const SMART = { most: ['Most played', 'trending'], recent: ['Recently added', 'clock'], forgotten: ['Not played in a while', 'history'] };
@@ -597,7 +596,6 @@ function artistsList() {
   for (const t of S.tracks) { if (!m.has(t.artist)) m.set(t.artist, []); m.get(t.artist).push(t); }
   return [...m.entries()].map(([name, tracks]) => ({ name, tracks, artId: (tracks.find(t => t.hasArt) || {}).id || null })).sort((a, b) => a.name.localeCompare(b.name));
 }
-const greeting = () => { const h = new Date().getHours(); return h < 5 ? 'Good night' : h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening'; };
 function continueEpisodes() {
   const out = [];
   for (const pod of S.podcasts) for (const e of pod.episodes) {
@@ -616,7 +614,7 @@ Views.home = () => {
     <button class="iconbtn" data-a="together" aria-label="Listen together">${icon('users')}</button>
     <button class="iconbtn" data-a="import" aria-label="Add songs">${icon('upload')}</button>
     <button class="iconbtn" data-a="go" data-v="settings" aria-label="Settings">${icon('gear')}</button></div>
-    <h1 class="welcome">Welcome to the world of Isai</h1>`;
+    <h1 class="welcome">${greeting()}</h1><p class="welcome-sub">${S.recent.length ? 'Pick up where you left off' : "Let's find something to play"}</p>`;
   if (!S.tracks.length && !S.podcasts.length && !S.recent.length) {
     return h + emptyHTML('music', 'Let\'s get started', 'Stream your music from Google Drive, follow podcasts, or explore free music and radio.',
       `<div style="display:flex;flex-direction:column;gap:10px;align-items:center">
@@ -797,12 +795,13 @@ Views.folder = name => {
   if (!items.length) return h + emptyHTML('folder', 'This folder is empty', 'Add songs to it in Google Drive.');
   return h + playBar(L) + rowsHTML(items, name, { dur: true });
 };
+const scopeChips = () => Object.keys(S.others || {}).length ? `<div class="seg">${[['me', 'This phone'], ['both', 'Both phones']].map(([k, l]) => `<button class="${Stats.scope() === k ? 'on' : ''}" data-a="stats-scope" data-t="${k}">${l}</button>`).join('')}</div>` : '';
 Views.stats = () => {
   const months = Stats.months(), cur = monthKey();
   const sel = S.statsMonth || cur;
   const label = m => m === 'year' ? `${new Date().getFullYear()} so far` : new Date(m + '-15').toLocaleDateString(undefined, { month: 'long', year: m.slice(0, 4) === String(new Date().getFullYear()) ? undefined : 'numeric' });
   const opts = [...new Set([cur, ...months])].slice(0, 12);
-  let h = topbar('Your listening stats', { back: true });
+  let h = topbar('Your listening stats', { back: true }) + scopeChips();
   h += `<div class="chips">${[...opts, 'year'].map(m => `<button class="chip ${sel === m ? 'on' : ''}" data-a="stats-month" data-t="${m}">${m === cur ? 'This month' : esc(label(m))}</button>`).join('')}</div>`;
   const st = Stats.month(sel), tp = Stats.totalPlays();
   const mins = Math.round(st.secs / 60);
@@ -824,7 +823,7 @@ Views.stats = () => {
     return `<div class="row"><span class="rank">${r.i + 1}</span>${artHTML({ title: r.title }, '', 46)}<div class="meta"><div class="t ellipsis">${esc(r.title)}</div><div class="s ellipsis">${esc(r.artist)}</div></div><span class="muted plays">${r.n} play${r.n === 1 ? '' : 's'}</span></div>`;
   }).join('') + `</div>`;
   h += `<div class="section-title">Top artists</div><div class="list">` + artists.map(([a, n], i) => `<button class="row" data-a="go" data-v="artist" data-p="${esc(a)}"><span class="rank">${i + 1}</span>${artHTML({ title: a }, '', 46).replace('class="art ', 'style="width:46px;height:46px;border-radius:50%" class="art ')}<div class="meta"><div class="t ellipsis">${esc(a)}</div></div><span class="muted plays">${n} play${n === 1 ? '' : 's'}</span></button>`).join('') + `</div>`;
-  if (Object.keys(S.others || {}).length) h += `<p class="dim" style="font-size:12px;margin-top:16px">Includes listening from both phones.</p>`;
+  if (Stats.scope() === 'both') h += `<p class="dim" style="font-size:12px;margin-top:16px">Includes listening from both phones.</p>`;
   return h;
 };
 /* ----- Recap: swipeable cards for a month or a year ----- */
@@ -840,7 +839,7 @@ Views.recap = m => {
   m = typeof m === 'string' && m ? m : monthKey();
   const isYear = m === 'year' || /^y:/.test(m), name = recapLabel(m);
   const st = Stats.month(m), tp = Stats.totalPlays(), km = keyMap();
-  let h = topbar('', { back: true });
+  let h = topbar('', { back: true }) + scopeChips();
   const songs = Object.entries(st.songs).sort((a, b) => b[1] - a[1]);
   if (!songs.length) return h + emptyHTML('chart', 'No recap yet', `Play some music and your ${esc(name)} recap fills in.`);
   const mins = Math.round(st.secs / 60), plays = songs.reduce((a, [, n]) => a + n, 0);
@@ -877,7 +876,7 @@ Views.recap = m => {
     if (dd && dd[1] > 60) { const day = new Date(+m.slice(0, 4), +m.slice(5, 7) - 1, +dd[0]); cards.push(card(4, `<div class="rc-kicker">Your biggest day</div><div class="rc-title big">${esc(day.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' }))}</div><div class="rc-note">${Math.round(dd[1] / 60).toLocaleString()} minutes of music</div>`)); }
   }
   // 6. totals
-  cards.push(card(5, `<div class="rc-kicker">${esc(name)} in numbers</div><div class="rc-grid"><div><b>${plays.toLocaleString()}</b><span>plays</span></div><div><b>${songs.length.toLocaleString()}</b><span>different songs</span></div><div><b>${artists.length.toLocaleString()}</b><span>artists</span></div><div><b>${mins.toLocaleString()}</b><span>minutes</span></div></div>${Object.keys(S.others || {}).length ? '<div class="rc-note">Includes listening from both phones.</div>' : ''}`));
+  cards.push(card(5, `<div class="rc-kicker">${esc(name)} in numbers</div><div class="rc-grid"><div><b>${plays.toLocaleString()}</b><span>plays</span></div><div><b>${songs.length.toLocaleString()}</b><span>different songs</span></div><div><b>${artists.length.toLocaleString()}</b><span>artists</span></div><div><b>${mins.toLocaleString()}</b><span>minutes</span></div></div>${Stats.scope() === 'both' ? '<div class="rc-note">Includes listening from both phones.</div>' : ''}`));
   h += `<div class="recap" id="recap">${cards.join('')}</div><div class="recap-dots">${cards.map((_, i) => `<span class="${i ? '' : 'on'}"></span>`).join('')}</div>`;
   setTimeout(() => {
     const el = $('#recap'); if (!el) return;
@@ -1436,6 +1435,7 @@ const A = {
   libtab: d => { S.libTab = d.t; S.libFilter = ''; render(); },
   'lib-sort': d => { S.libSort = d.t; const b = $('#lib-body'); if (b) { S.lists = {}; b.innerHTML = libBodyHTML(); hydrateArt(b); markPlayingRows(); } },
   'stats-month': d => { S.statsMonth = d.t; rerenderKeepScroll(); },
+  'stats-scope': d => { Stats.setScope(d.t); render(); },
     podtab: d => { S.podTab = d.t; render(); },
   disctab: d => { S.discTab = d.t; render(); },
   discq: d => { const i = $('#dq'); if (i) i.value = d.q; runDiscover(d.q); },
@@ -1525,7 +1525,7 @@ const A = {
     for (const id of Object.keys(S.epDl)) await DB.del('blobs', 'ep:' + id);
     S.epDl = {}; await saveKV.epDl(); toast('Downloads deleted'); rerenderKeepScroll();
   },
-  'clear-recent': async () => { S.recent = []; S.meta.recentClear = Date.now(); saveMeta(); Sync.soon(); await saveKV.recent(); toast('Cleared'); },
+  'clear-recent': async () => { S.recent = []; await saveKV.recent(); toast('Cleared'); },
   'rename-phone': () => {
     const n = (prompt("This phone's name", DeviceName.get()) || '').trim().slice(0, 24);
     if (!n) return;
@@ -1606,7 +1606,8 @@ document.addEventListener('submit', async e => {
   if (f === 'podsearch') { const q = $('#pq').value.trim(); $('#pq').blur(); if (q) runPodSearch(q); }
   if (f === 'settings') {
     S.settings.jamendo = $('#s-jam').value.trim();
-    S.settings.relay = $('#s-relay').value.trim();
+    const relay = $('#s-relay').value.trim();
+    if (relay !== (S.settings.relay || '')) { S.settings.relay = relay; S.settings.relayAt = Date.now(); Sync.soon(1000); }
     await saveKV.settings(); delete S.disc.jamendo; toast('Settings saved');
   }
 });
@@ -2022,6 +2023,9 @@ function pKey(p) {
 const monthKey = (d = new Date()) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
 const Stats = {
   cur: null, lastT: null, saveT: null,
+  scope() { try { return localStorage.getItem('isai-stats-scope') === 'both' ? 'both' : 'me'; } catch { return 'me'; } },
+  setScope(v) { try { localStorage.setItem('isai-stats-scope', v); } catch { } },
+  others(scope) { return (scope || this.scope()) === 'both' ? Object.values(S.others || {}) : []; },
   onTime() {
     const p = Player.cur, k = pKey(p);
     if (!k || audio.paused) { this.lastT = null; return; }
@@ -2050,7 +2054,7 @@ const Stats = {
     this.lastT = t;
   },
   save() { clearTimeout(this.saveT); this.saveT = setTimeout(() => { KV.set('plays', S.plays); KV.set('stats', S.stats); }, 2000); },
-  totalPlays() {
+  totalPlays(scope) {
     const out = {};
     const add = src => {
       for (const [k, v] of Object.entries(src || {})) {
@@ -2059,10 +2063,10 @@ const Stats = {
         if (!o.title) { o.title = v.title; o.artist = v.artist; }
       }
     };
-    add(S.plays); for (const d of Object.values(S.others || {})) add(d.plays);
+    add(S.plays); for (const d of this.others(scope)) add(d.plays);
     return out;
   },
-  month(m) {
+  month(m, scope) {
     const out = { songs: {}, artists: {}, secs: 0, days: {} };
     const add = st => {
       if (!st) return;
@@ -2071,13 +2075,13 @@ const Stats = {
       for (const [k, v] of Object.entries(st.songs || {})) out.songs[k] = (out.songs[k] || 0) + v;
       for (const [k, v] of Object.entries(st.artists || {})) out.artists[k] = (out.artists[k] || 0) + v;
     };
-    if (m === 'year' || /^y:\d{4}$/.test(m)) { const y = m === 'year' ? String(new Date().getFullYear()) : m.slice(2); out.days = {}; for (const mm of this.months().filter(x => x.startsWith(y + '-'))) { const r = this.month(mm); r.days = {}; add(r); } return out; }
-    add(S.stats[m]); for (const d of Object.values(S.others || {})) add((d.stats || {})[m]);
+    if (m === 'year' || /^y:\d{4}$/.test(m)) { const y = m === 'year' ? String(new Date().getFullYear()) : m.slice(2); out.days = {}; for (const mm of this.months(scope).filter(x => x.startsWith(y + '-'))) { const r = this.month(mm, scope); r.days = {}; add(r); } return out; }
+    add(S.stats[m]); for (const d of this.others(scope)) add((d.stats || {})[m]);
     return out;
   },
-  months() {
+  months(scope) {
     const set = new Set(Object.keys(S.stats));
-    for (const d of Object.values(S.others || {})) Object.keys(d.stats || {}).forEach(m => set.add(m));
+    for (const d of this.others(scope)) Object.keys(d.stats || {}).forEach(m => set.add(m));
     return [...set].sort().reverse();
   },
 };
@@ -2236,9 +2240,9 @@ function localDoc() {
   for (const r of S.radioFavs) if (!radio[r.key]) radio[r.key] = { on: true, at: 1, item: r };
   const pods = Object.assign({}, S.meta.pods || {});
   for (const p of S.podcasts) if (!pods[p.feedUrl]) pods[p.feedUrl] = { on: true, at: 1, pod: podStub(p) };
-  const recent = S.recent.map(p => Object.assign({}, p, { at: p.at || 1, sk: p.sk || pKey(p) || p.key }));
+  const relay = { url: S.settings.relay || '', at: S.settings.relayAt || (S.settings.relay ? 1 : 0) };
   return {
-    v: 1, liked, playlists, plDel: Object.assign({}, S.meta.plDel || {}), radio, pods, recent, recentClear: S.meta.recentClear || 0,
+    v: 1, liked, playlists, plDel: Object.assign({}, S.meta.plDel || {}), radio, pods, recent: [], recentClear: 0, relay,
     devices: Object.assign({}, S.others || {}, { [DEVICE_ID]: { name: DeviceName.get(), plays: S.plays, stats: S.stats, at: Date.now() } }),
   };
 }
@@ -2248,25 +2252,21 @@ function mergeDocs(a, b) {
   for (const src of [a.plDel, b.plDel]) for (const [k, v] of Object.entries(src || {})) plDel[k] = Math.max(plDel[k] || 0, v);
   const playlists = newer(a.playlists, b.playlists);
   for (const id of Object.keys(playlists)) if (plDel[id] && plDel[id] >= (playlists[id].at || 0)) delete playlists[id];
-  const recentClear = Math.max(a.recentClear || 0, b.recentClear || 0);
-  const rec = new Map();
-  for (const p of [...(a.recent || []), ...(b.recent || [])]) {
-    if ((p.at || 0) <= recentClear) continue;
-    const k = p.sk || p.key;
-    if (!rec.has(k) || (p.at || 0) > (rec.get(k).at || 0)) rec.set(k, p);
-  }
   const devices = {};
   for (const src of [a.devices, b.devices]) for (const [k, v] of Object.entries(src || {})) if (!devices[k] || (v.at || 0) > (devices[k].at || 0)) devices[k] = v;
   return {
     v: 1, liked: newer(a.liked, b.liked), playlists, plDel, radio: newer(a.radio, b.radio), pods: newer(a.pods, b.pods),
-    recent: [...rec.values()].sort((x, y) => (y.at || 0) - (x.at || 0)).slice(0, 30), recentClear, devices,
+    recent: [], recentClear: 0, devices,
+    relay: (b.relay && (b.relay.at || 0) > ((a.relay && a.relay.at) || 0)) ? b.relay : (a.relay || b.relay),
   };
 }
 function stateSig() {
-  return JSON.stringify([[...S.liked].sort(), S.playlists.map(p => [p.id, p.name, p.ids]), S.radioFavs.map(r => r.key), S.podcasts.map(p => p.feedUrl), S.recent.map(r => r.key), Object.keys(S.others || {})]);
+  return JSON.stringify([[...S.liked].sort(), S.playlists.map(p => [p.id, p.name, p.ids]), S.radioFavs.map(r => r.key), S.podcasts.map(p => p.feedUrl), Object.keys(S.others || {})]);
 }
 async function applyDoc(doc) {
-  S.meta.liked = doc.liked || {}; S.meta.radio = doc.radio || {}; S.meta.pods = doc.pods || {}; S.meta.plDel = doc.plDel || {}; S.meta.recentClear = doc.recentClear || 0;
+  S.meta.liked = doc.liked || {}; S.meta.radio = doc.radio || {}; S.meta.pods = doc.pods || {}; S.meta.plDel = doc.plDel || {};
+  const rl = doc.relay;
+  if (rl && rl.url !== (S.settings.relay || '') && ((rl.at || 0) > (S.settings.relayAt || 0) || (rl.url && !S.settings.relay))) { S.settings.relay = rl.url; S.settings.relayAt = rl.at || 1; saveKV.settings(); }
   const km = keyMap();
   S.liked = new Set(Object.entries(S.meta.liked).filter(([, v]) => v.on).map(([k]) => km.get(k)).filter(Boolean));
   S.playlists = Object.entries(doc.playlists || {}).map(([id, v]) => ({
@@ -2280,14 +2280,9 @@ async function applyDoc(doc) {
     if (v.on && !has && v.pod) { S.podcasts.push(Object.assign({}, v.pod, { episodes: [], fetchedAt: 0 })); podsChanged = true; }
     if (!v.on && has) { S.podcasts = S.podcasts.filter(p => p.feedUrl !== feed); podsChanged = true; }
   }
-  S.recent = (doc.recent || []).map(p => {
-    if (p.type !== 'song') return p;
-    const id = km.get(p.sk); if (!id) return null;
-    return Object.assign(songP(trackById(id)), { at: p.at, sk: p.sk });
-  }).filter(Boolean).slice(0, 20);
   S.others = {};
   for (const [k, v] of Object.entries(doc.devices || {})) if (k !== DEVICE_ID) S.others[k] = v;
-  await Promise.all([saveKV.liked(), saveKV.playlists(), saveKV.radioFavs(), saveKV.recent(), saveKV.podcasts(), saveMeta(), KV.set('others', S.others)]);
+  await Promise.all([saveKV.liked(), saveKV.playlists(), saveKV.radioFavs(), saveKV.podcasts(), saveMeta(), KV.set('others', S.others)]);
   if (podsChanged) setTimeout(() => refreshPodcasts(false), 600);
 }
 const Sync = {
@@ -2691,10 +2686,15 @@ function cleanupOldProfiles() {
     localStorage.setItem('isai-single-profile', '1');
   } catch { }
 }
+const WELCOME_LINES = ['Welcome to the world of Isai', 'Press play, the world can wait', 'Where words fail, music speaks', 'Volume up, worries down', 'Every day deserves a soundtrack', "Life's better with a beat"];
+function greeting(d = new Date()) {
+  const h = d.getHours();
+  return h >= 5 && h < 12 ? 'Good morning' : h >= 12 && h < 17 ? 'Good afternoon' : h >= 17 && h < 22 ? 'Good evening' : 'Late night vibes';
+}
 function showWelcome() {
   const el = $('#picker');
   el.classList.remove('hidden'); el.classList.add('welcome-splash');
-  el.innerHTML = `<div class="pk-inner">${LOGO_SVG.replace('width="48" height="48"', 'width="84" height="84"')}<h1>Welcome to the world of Isai</h1></div>`;
+  el.innerHTML = `<div class="pk-inner">${LOGO_SVG.replace('width="48" height="48"', 'width="84" height="84"')}<h1>${esc(WELCOME_LINES[Math.floor(Math.random() * WELCOME_LINES.length)])}</h1></div>`;
   const hide = () => { el.classList.add('fade'); setTimeout(() => { el.classList.add('hidden'); el.classList.remove('fade', 'welcome-splash'); el.innerHTML = ''; }, 350); };
   el.addEventListener('click', hide, { once: true });
   setTimeout(hide, 1600);
@@ -2720,10 +2720,11 @@ async function start() {
   const [tracks, liked, playlists, podcasts, progress, recent, radioFavs, epDl, settings, player] = await Promise.all(
     [DB.all('tracks'), KV.get('liked'), KV.get('playlists'), KV.get('podcasts'), KV.get('progress'), KV.get('recent'), KV.get('radioFavs'), KV.get('epDl'), KV.get('settings'), KV.get('player')]);
   S.tracks = tracks || []; S.liked = new Set(liked || []); S.playlists = playlists || []; S.podcasts = podcasts || [];
-  S.progress = progress || {}; S.recent = recent || []; S.radioFavs = radioFavs || []; S.epDl = epDl || {};
+  S.progress = progress || {}; S.recent = recent || [];
   S.settings = Object.assign({ jamendo: DEFAULT_JAMENDO, relay: '' }, settings || {});
   const [plays, stats, meta, others, lastSync] = await Promise.all([KV.get('plays'), KV.get('stats'), KV.get('meta'), KV.get('others'), KV.get('lastSync')]);
   S.plays = plays || {}; S.stats = stats || {}; S.meta = meta || {}; delete S.meta.legacy; S.others = others || {}; Sync.lastAt = lastSync || 0;
+  if (!localStorage.getItem('isai-recent-local')) { S.recent = S.recent.filter(p => p.type !== 'song' || (S.plays && S.plays[p.sk])); try { localStorage.setItem('isai-recent-local', '1'); } catch { } setTimeout(() => saveKV.recent(), 0); } S.radioFavs = radioFavs || []; S.epDl = epDl || {};
   if (!S.settings.jamendo) S.settings.jamendo = DEFAULT_JAMENDO;
   if (player && player.queue && player.queue.length) {
     Object.assign(Player, { queue: player.queue, idx: Math.min(player.idx, player.queue.length - 1), context: player.context, shuffle: !!player.shuffle, repeat: player.repeat || 'off', speed: player.speed || 1, ready: false });
