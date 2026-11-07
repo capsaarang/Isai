@@ -1,7 +1,7 @@
 'use strict';
 /* Isai: personal music and podcast player. All data stays on this device. */
 
-const VERSION = '1.1.1';
+const VERSION = '1.2.0';
 const DEFAULT_JAMENDO = '339d4597';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -1290,10 +1290,10 @@ const A = {
     const p = editingProfile; if (!p) return;
     const n = (prompt('Profile name', p.name) || '').trim().slice(0, 20);
     if (!n) return;
-    p.name = n; if (saveProfiles()) afterProfileEdit('Name updated');
+    p.name = n; touchProfile(p); if (saveProfiles()) afterProfileEdit('Name updated');
   },
   'pf-avatar': () => avatarSheet(),
-  'pf-set-av': d => { const p = editingProfile; if (!p) return; p.avatar = d.k; delete p.photo; if (saveProfiles()) afterProfileEdit('Avatar updated'); },
+  'pf-set-av': d => { const p = editingProfile; if (!p) return; p.avatar = d.k; delete p.photo; touchProfile(p); if (saveProfiles()) afterProfileEdit('Avatar updated'); },
   'pf-photo': () => $('#photo-input').click(),
   'pf-clear': async () => {
     const p = editingProfile; if (!p) return;
@@ -1397,6 +1397,7 @@ function loadProfiles() {
 }
 let PROFILES = loadProfiles();
 let ME = null;
+function touchProfile(p) { p.updatedAt = Date.now(); }
 function saveProfiles() { try { localStorage.setItem('isai-profiles', JSON.stringify(PROFILES)); return true; } catch { toast("Couldn't save that change. The photo may be too large."); return false; } }
 const person = (bg, shirt, skin, hair, extra = '') => `<svg viewBox="0 0 100 100"><rect width="100" height="100" fill="${bg}"/><path d="M22 100 C22 76 34 66 50 66 C66 66 78 76 78 100 Z" fill="${shirt}"/>${extra.includes('@collar') ? '' : ''}<circle cx="50" cy="44" r="17" fill="${skin}"/>${hair}${extra.replace('@collar', '')}</svg>`;
 const AVATARS = {
@@ -1474,17 +1475,41 @@ $('#photo-input').addEventListener('change', async e => {
   if (!f || !editingProfile) return;
   try {
     const old = editingProfile.photo;
-    editingProfile.photo = await photoToDataURL(f);
+    editingProfile.photo = await photoToDataURL(f); touchProfile(editingProfile);
     if (!saveProfiles()) { editingProfile.photo = old; return; }
     afterProfileEdit('Photo updated');
   } catch { toast("Couldn't use that photo"); }
 });
 function afterProfileEdit(msg) {
+  Together.sendProfiles();
   closeSheet(); if (msg) toast(msg, 1600);
   setTimeout(() => {
     if (!$('#picker').classList.contains('hidden')) showPicker(pickerManage);
     if (ME) { ME = PROFILES.find(x => x.id === ME.id) || ME; rerenderKeepScroll(); }
   }, 80);
+}
+
+function mergeProfiles(incoming) {
+  let changed = false;
+  for (const inc of incoming) {
+    if (!inc || typeof inc.id !== 'string' || typeof inc.name !== 'string') continue;
+    const local = PROFILES.find(p => p.id === inc.id);
+    if (!local) continue;
+    if ((inc.updatedAt || 0) > (local.updatedAt || 0)) {
+      local.name = inc.name.slice(0, 20);
+      local.avatar = AVATARS[inc.avatar] ? inc.avatar : local.avatar;
+      if (typeof inc.photo === 'string' && inc.photo.startsWith('data:image/') && inc.photo.length < 400000) local.photo = inc.photo; else delete local.photo;
+      local.updatedAt = inc.updatedAt;
+      changed = true;
+    }
+  }
+  if (!changed) return;
+  saveProfiles();
+  if (ME) ME = PROFILES.find(p => p.id === ME.id) || ME;
+  if (Together.partnerId) Together.partner = PROFILES.find(p => p.id === Together.partnerId) || Together.partner;
+  if (!$('#picker').classList.contains('hidden')) showPicker(pickerManage);
+  if (ME) rerenderKeepScroll();
+  updateTogetherBar();
 }
 
 /* ---------- listen together ---------- */
@@ -1534,7 +1559,7 @@ const Together = {
   },
   attach(c) {
     this.conn = c;
-    c.on('open', () => { this.send({ t: 'hello', name: ME.name, avatar: ME.avatar }); });
+    c.on('open', () => { this.send(this.helloMsg()); });
     c.on('data', d => this.onData(d));
     c.on('close', () => { if (this.conn === c) this.onClose(); });
     c.on('error', () => { });
@@ -1544,10 +1569,12 @@ const Together = {
     if (!d || typeof d !== 'object') return;
     if (d.t === 'hello') {
       const first = !this.partner;
-      this.partner = { name: String(d.name || 'Friend').slice(0, 30), avatar: d.avatar };
+      if (Array.isArray(d.profiles)) mergeProfiles(d.profiles);
+      this.partnerId = d.id;
+      this.partner = PROFILES.find(p => p.id === d.id) || { name: String(d.name || 'Friend').slice(0, 30), avatar: d.avatar };
       this.status = 'connected';
       if (first) {
-        this.send({ t: 'hello', name: ME.name, avatar: ME.avatar });
+        this.send(this.helloMsg());
         toast(`Listening with ${this.partner.name}`);
         this.syncClock();
         if (this.role === 'host') setTimeout(() => { if (Player.cur) this.broadcast(); }, 1200);
@@ -1555,13 +1582,16 @@ const Together = {
         this.hb = setInterval(() => { if (this.connected() && this.controller === ME.name && !audio.paused) this.broadcast(); }, 4000);
       }
       refreshTogether();
-    } else if (d.t === 'ping') this.send({ t: 'pong', a: d.a, b: Date.now() });
+    } else if (d.t === 'profiles') { if (Array.isArray(d.profiles)) mergeProfiles(d.profiles); }
+    else if (d.t === 'ping') this.send({ t: 'pong', a: d.a, b: Date.now() });
     else if (d.t === 'pong') this.onPong(d);
     else if (d.t === 'state') this.applyRemote(d);
     else if (d.t === 'react') { floatHeart(); toast(`${this.partner ? this.partner.name : 'They'} sent you a heart`, 1800); }
     else if (d.t === 'busy') { this.fail('That session already has two people.'); }
     else if (d.t === 'bye') this.onClose();
   },
+  helloMsg() { return { t: 'hello', id: ME.id, name: ME.name, avatar: ME.avatar, profiles: PROFILES }; },
+  sendProfiles() { if (this.connected()) this.send({ t: 'profiles', profiles: PROFILES }); },
   samples: [],
   syncClock() {
     this.samples = [];
