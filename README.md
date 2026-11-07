@@ -32,10 +32,10 @@ Keep the original files as a backup. Clearing Chrome's site data removes Isai's 
 
 1. Both phones open Isai and pick their profile.
 2. One person taps the **Listen together** icon on Home (two people) and taps **Start a session**.
-3. Share the code (like `RAGA-42`). The other person taps **Listen together**, enters the code, and taps **Join**.
+3. Share the code (like `RAGA-7KX2QM`). The other person taps **Listen together**, enters the code, and taps **Join**.
 4. Whoever presses play, pause, skip, or seeks becomes the one choosing. Tap the heart in the top banner to send a heart.
 
-Both phones need internet. On iPhone, keep Isai open: locking the screen or switching apps can pause the link until Isai is reopened. The link uses the free PeerJS connection service and sends only play and pause updates, never song files.
+Both phones need internet. On iPhone, keep Isai open: locking the screen or switching apps can pause the link until Isai is reopened. Updates pass through free public relay servers (EMQX and HiveMQ), encrypted with a key made from the session code, so the relays can't read them. Only play, pause, skip, seek, hearts, and profile info are sent, never song files.
 
 ## Optional: podcast relay (free, about 5 minutes)
 
@@ -60,4 +60,4 @@ The relay only accepts requests from `capsaarang.github.io`, so nobody else can 
 | `manifest.webmanifest` | Home screen install |
 | `relay-worker.js` | Optional Cloudflare relay for podcasts |
 | `vendor/jsmediatags.min.js` | Reads song tags and cover art |
-| `vendor/peerjs.min.js` | Phone-to-phone link for Listen together (MIT) |
+| `vendor/mqtt.min.js` | Relay connection for Listen together (MIT) |

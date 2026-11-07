@@ -1,7 +1,7 @@
 'use strict';
 /* Isai: personal music and podcast player. All data stays on this device. */
 
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 const DEFAULT_JAMENDO = '339d4597';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -1514,61 +1514,104 @@ function mergeProfiles(incoming) {
 
 /* ---------- listen together ---------- */
 const SILENT_WAV = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+const RELAYS = ['wss://broker.emqx.io:8084/mqtt', 'wss://broker.hivemq.com:8884/mqtt'];
+const CODE_CHARS = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
+function toB64(buf) { const a = new Uint8Array(buf); let s = ''; for (let i = 0; i < a.length; i += 8192) s += String.fromCharCode.apply(null, a.subarray(i, i + 8192)); return btoa(s); }
+function fromB64(s) { return Uint8Array.from(atob(s), c => c.charCodeAt(0)); }
 const Together = {
-  peer: null, conn: null, code: '', role: null, partner: null, offset: 0, controller: null,
-  suppressUntil: 0, bt: null, hb: null, missing: null, status: 'idle', err: '',
+  clients: [], session: null, key: null, topic: '', myId: '', partnerClient: null, seen: new Set(),
+  code: '', role: null, partner: null, offset: 0, controller: null,
+  bt: null, hb: null, beat: null, watch: null, helloTimer: null, joinTimer: null, lastSeen: 0, missing: null, status: 'idle', err: '',
   isSilent() { return (audio.currentSrc || audio.src || '').startsWith('data:audio/wav'); },
-  connected() { return !!(this.conn && this.conn.open && this.partner); },
-  makeCode() { const w = ['RAGA', 'TALA', 'VEENA', 'MALLI', 'KUYIL', 'ISAI', 'NILA', 'MAYIL', 'SWARA', 'PALLAVI']; return w[Math.floor(Math.random() * w.length)] + '-' + (10 + Math.floor(Math.random() * 90)); },
-  peerId(code) { return 'isai-together-' + code.toLowerCase().replace(/[^a-z0-9]/g, ''); },
+  connected() { return this.status === 'connected' && !!this.partner && !!this.partnerClient; },
+  makeCode() {
+    const w = ['RAGA', 'TALA', 'VEENA', 'MALLI', 'KUYIL', 'ISAI', 'NILA', 'MAYIL', 'SWARA', 'KAVI'];
+    const r = crypto.getRandomValues(new Uint8Array(6));
+    return w[crypto.getRandomValues(new Uint8Array(1))[0] % w.length] + '-' + [...r].map(x => CODE_CHARS[x % CODE_CHARS.length]).join('');
+  },
   unlock() {
     if (Player.ready && audio.src && !this.isSilent()) return;
     try { audio.src = SILENT_WAV; const p = audio.play(); if (p) p.then(() => audio.pause()).catch(() => { }); } catch { }
   },
-  newPeer(id) {
-    if (!window.Peer) { this.fail("Listen together needs internet. Check your connection and try again."); return null; }
-    const p = id ? new Peer(id, { debug: 0 }) : new Peer({ debug: 0 });
-    p.on('error', e => this.onError(e));
-    p.on('disconnected', () => { if (this.peer === p && !this.connected() && this.status !== 'idle') { try { p.reconnect(); } catch { } } });
-    return p;
+  async openRelay(code) {
+    if (!window.mqtt || !window.crypto || !crypto.subtle) return false;
+    const enc = new TextEncoder();
+    const base = await crypto.subtle.importKey('raw', enc.encode(code), 'PBKDF2', false, ['deriveKey']);
+    this.key = await crypto.subtle.deriveKey({ name: 'PBKDF2', salt: enc.encode('isai-together-v2'), iterations: 150000, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+    const h = new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode('isai-topic|' + code)));
+    this.topic = 'isai/together/' + [...h.slice(0, 16)].map(b => b.toString(16).padStart(2, '0')).join('');
+    this.myId = uid(); this.seen = new Set();
+    const session = this.session = {};
+    return new Promise(resolve => {
+      let settled = false, failed = 0;
+      const finish = ok => { if (!settled) { settled = true; resolve(ok); } };
+      setTimeout(() => finish(this.clients.some(c => c.connected)), 10000);
+      for (const url of RELAYS) {
+        let c;
+        try { c = mqtt.connect(url, { clientId: 'isai_' + uid(), clean: true, connectTimeout: 9000, reconnectPeriod: 3000, keepalive: 30, protocolVersion: 4 }); }
+        catch { if (++failed === RELAYS.length) finish(false); continue; }
+        this.clients.push(c);
+        let tried = false;
+        c.on('connect', () => { c.subscribe(this.topic, { qos: 0 }, () => finish(true)); });
+        c.on('message', (topic, payload) => { if (this.session === session) this.onRaw(payload); });
+        c.on('error', () => { if (!tried) { tried = true; if (++failed === RELAYS.length) finish(false); } });
+      }
+    });
   },
-  host() {
+  async send(m) {
+    if (!this.key || !this.clients.length) return;
+    try {
+      const body = new TextEncoder().encode(JSON.stringify(Object.assign({}, m, { _f: this.myId, _id: uid() })));
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, this.key, body);
+      const payload = JSON.stringify({ i: toB64(iv), c: toB64(ct) });
+      for (const c of this.clients) if (c.connected) c.publish(this.topic, payload, { qos: 0 });
+    } catch { }
+  },
+  async onRaw(payload) {
+    let d;
+    try {
+      const w = JSON.parse(new TextDecoder().decode(payload));
+      const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromB64(w.i) }, this.key, fromB64(w.c));
+      d = JSON.parse(new TextDecoder().decode(pt));
+    } catch { return; }
+    if (!d || d._f === this.myId) return;
+    if (this.seen.has(d._id)) return;
+    this.seen.add(d._id); if (this.seen.size > 600) this.seen = new Set([...this.seen].slice(-300));
+    if (d._to && d._to !== this.myId) return;
+    if (this.partnerClient && d._f !== this.partnerClient) { if (d.t === 'hello') this.send({ t: 'busy', _to: d._f }); return; }
+    this.lastSeen = Date.now();
+    this.onData(d);
+  },
+  async host() {
     this.leave(true); this.unlock();
     this.role = 'host'; this.code = this.makeCode(); this.status = 'starting'; this.err = '';
-    this.peer = this.newPeer(this.peerId(this.code)); if (!this.peer) return;
-    this.peer.on('open', () => { this.status = 'waiting'; refreshTogether(); });
-    this.peer.on('connection', c => {
-      if (this.connected()) { c.on('open', () => { c.send({ t: 'busy' }); setTimeout(() => c.close(), 400); }); return; }
-      this.attach(c);
-    });
     refreshTogether();
+    const code = this.code;
+    const ok = await this.openRelay(code);
+    if (this.code !== code) return;
+    if (!ok) { this.fail("Couldn't reach the Listen together service. Check your internet and try again."); return; }
+    this.status = 'waiting'; refreshTogether();
   },
-  join(code) {
-    code = String(code || '').trim().toUpperCase().replace(/\s+/g, '-');
-    if (!/^[A-Z]+-?\d{2}$/.test(code)) { this.err = 'Enter the code exactly as shown, like RAGA-42'; refreshTogether(); return; }
-    if (!code.includes('-')) code = code.replace(/(\d{2})$/, '-$1');
+  async join(raw) {
+    const m = String(raw || '').trim().toUpperCase().replace(/\s+/g, '').match(/^([A-Z]+)-?([2-9A-HJ-NP-Z]{6})$/);
+    if (!m) { this.err = 'Enter the code exactly as shown, like RAGA-7KX2QM'; refreshTogether(); return; }
+    const code = m[1] + '-' + m[2];
     this.leave(true); this.unlock();
     this.role = 'guest'; this.code = code; this.status = 'joining'; this.err = '';
-    this.peer = this.newPeer(); if (!this.peer) return;
-    this.peer.on('open', () => {
-      const c = this.peer.connect(this.peerId(code), { reliable: true });
-      this.attach(c);
-      setTimeout(() => { if (this.status === 'joining' && !this.connected()) this.fail("Couldn't reach that session. Check the code and that the other phone has Isai open."); }, 15000);
-    });
     refreshTogether();
+    const ok = await this.openRelay(code);
+    if (this.code !== code) return;
+    if (!ok) { this.fail("Couldn't reach the Listen together service. Check your internet and try again."); return; }
+    this.send(this.helloMsg());
+    this.helloTimer = setInterval(() => { if (!this.connected()) this.send(this.helloMsg()); else clearInterval(this.helloTimer); }, 2000);
+    this.joinTimer = setTimeout(() => { if (this.status === 'joining') this.fail("Couldn't find that session. Check the code, and make sure the other phone has Isai open."); }, 25000);
   },
-  attach(c) {
-    this.conn = c;
-    c.on('open', () => { this.send(this.helloMsg()); });
-    c.on('data', d => this.onData(d));
-    c.on('close', () => { if (this.conn === c) this.onClose(); });
-    c.on('error', () => { });
-  },
-  send(m) { try { if (this.conn && this.conn.open) this.conn.send(m); } catch { } },
   onData(d) {
     if (!d || typeof d !== 'object') return;
     if (d.t === 'hello') {
       const first = !this.partner;
+      if (first) { this.partnerClient = d._f; clearInterval(this.helloTimer); clearTimeout(this.joinTimer); }
       if (Array.isArray(d.profiles)) mergeProfiles(d.profiles);
       this.partnerId = d.id;
       this.partner = PROFILES.find(p => p.id === d.id) || { name: String(d.name || 'Friend').slice(0, 30), avatar: d.avatar };
@@ -1578,8 +1621,10 @@ const Together = {
         toast(`Listening with ${this.partner.name}`);
         this.syncClock();
         if (this.role === 'host') setTimeout(() => { if (Player.cur) this.broadcast(); }, 1200);
-        clearInterval(this.hb);
+        clearInterval(this.hb); clearInterval(this.beat); clearInterval(this.watch);
         this.hb = setInterval(() => { if (this.connected() && this.controller === ME.name && !audio.paused) this.broadcast(); }, 4000);
+        this.beat = setInterval(() => { if (this.connected()) this.send({ t: 'beat' }); }, 8000);
+        this.watch = setInterval(() => { if (this.connected() && Date.now() - this.lastSeen > 45000) this.onClose(true); }, 5000);
       }
       refreshTogether();
     } else if (d.t === 'profiles') { if (Array.isArray(d.profiles)) mergeProfiles(d.profiles); }
@@ -1587,7 +1632,7 @@ const Together = {
     else if (d.t === 'pong') this.onPong(d);
     else if (d.t === 'state') this.applyRemote(d);
     else if (d.t === 'react') { floatHeart(); toast(`${this.partner ? this.partner.name : 'They'} sent you a heart`, 1800); }
-    else if (d.t === 'busy') { this.fail('That session already has two people.'); }
+    else if (d.t === 'busy') { if (!this.connected()) this.fail('That session already has two people.'); }
     else if (d.t === 'bye') this.onClose();
   },
   helloMsg() { return { t: 'hello', id: ME.id, name: ME.name, avatar: ME.avatar, profiles: PROFILES }; },
@@ -1671,27 +1716,20 @@ const Together = {
     updatePlayerUI(); updateTogetherBar();
   },
   react() { if (!this.connected()) return; this.send({ t: 'react' }); toast('Heart sent', 1200); },
-  onError(e) {
-    const type = e && e.type;
-    if (type === 'unavailable-id' && this.role === 'host') { this.host(); return; }
-    if (type === 'peer-unavailable') { this.fail('No session with that code. Check it and try again.'); return; }
-    if (this.connected()) return;
-    this.fail("Couldn't connect. Check your internet and try again.");
-  },
-  fail(msg) { const keepRole = this.role; this.leave(true); this.err = msg; this.status = 'idle'; this.role = keepRole === 'guest' ? null : null; refreshTogether(); toast(msg, 3500); },
-  onClose() {
+  fail(msg) { this.leave(true); this.err = msg; refreshTogether(); toast(msg, 3500); },
+  onClose(lost = false) {
     const name = this.partner && this.partner.name;
     this.leave(true);
-    if (name) toast(`${name} left the session`);
+    if (name) toast(lost ? `Lost connection to ${name}` : `${name} left the session`);
   },
   leave(silent = false) {
-    if (!silent) this.send({ t: 'bye' });
-    clearInterval(this.hb); clearTimeout(this.bt);
-    const c = this.conn, p = this.peer;
-    this.conn = null; this.peer = null; this.partner = null; this.controller = null; this.missing = null; this.lastApplied = null; this.lastStateAt = 0;
+    if (!silent && this.connected()) this.send({ t: 'bye' });
+    [this.hb, this.beat, this.watch, this.helloTimer].forEach(clearInterval); clearTimeout(this.bt); clearTimeout(this.joinTimer);
+    const clients = this.clients;
+    this.clients = []; this.session = null; this.partner = null; this.partnerClient = null; this.partnerId = null;
+    this.controller = null; this.missing = null; this.lastApplied = null; this.lastStateAt = 0;
     this.status = 'idle'; this.role = null; this.code = '';
-    try { c && c.close(); } catch { }
-    try { p && p.destroy(); } catch { }
+    setTimeout(() => clients.forEach(c => { try { c.end(true); } catch { } }), silent ? 0 : 400);
     updateTogetherBar(); refreshTogether();
     if (Player.cur && Player.context && Player.context.startsWith('Listening with')) Player.context = 'Isai';
   },
@@ -1742,7 +1780,7 @@ function renderTogetherSheet() {
     h += `<p class="muted" style="font-size:14px;margin:6px 0 16px">Listen to the same thing at the same time on two phones, wherever you both are.</p>
       <button class="btn primary" style="width:100%" data-a="tg-host">${icon('users', 'sm')} Start a session</button>
       <div class="muted" style="text-align:center;font-size:13px;margin:16px 0 10px">or join one</div>
-      <form data-f="tg-join" style="display:flex;gap:8px"><input id="tg-code" class="tg-input" placeholder="RAGA-42" autocomplete="off" autocapitalize="characters" spellcheck="false" enterkeyhint="go"><button class="btn ghost" type="submit">Join</button></form>
+      <form data-f="tg-join" style="display:flex;gap:8px"><input id="tg-code" class="tg-input" placeholder="RAGA-7KX2QM" autocomplete="off" autocapitalize="characters" spellcheck="false" enterkeyhint="go"><button class="btn ghost" type="submit">Join</button></form>
       ${T.err ? `<p style="color:var(--danger);font-size:13px;margin-top:10px">${esc(T.err)}</p>` : ''}
       <p class="dim" style="font-size:12px;margin-top:16px">Podcasts, radio, and Discover music play on both phones. Your own songs play only if both phones have the same song.</p>`;
   }
