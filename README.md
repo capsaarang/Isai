@@ -11,6 +11,9 @@ A personal, ad-free music and podcast player for Android. No account, no trackin
 - **Discover:** free legal music from the Internet Archive (Creative Commons, public domain, and live-taping friendly recordings) and Jamendo (independent artists), plus internet radio by language. Save any track to your library for offline listening.
 - **Google Drive:** connect a Drive folder in Settings and stream your music without using phone storage. Save songs, albums, or playlists offline when you want them without internet. Isai can only read your Drive, never change it.
 - **Listen together:** one phone starts a session and shares a code, the other joins. Play, pause, skip, and seek stay in sync on both phones. Podcasts, radio, and Discover music play on both; your own songs play when both phones have the same song.
+- **Sync and backup:** likes, playlists, history, stats, stations, and followed shows stay the same on both phones through a hidden Isai file in your Drive. Back up to a file anytime from Settings.
+- **Made for you:** Most played, Recently added, Not played in a while, monthly listening stats, and a playlist for every subfolder in your Drive music folder.
+- **Playback:** crossfade (Android), songs loaded ahead of time, shared queue during Listen together, and sort and filter in Library.
 - Lock-screen and headphone controls, works offline, installs to the home screen.
 
 ## Install on Android
