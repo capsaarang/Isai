@@ -10,7 +10,6 @@ A personal, ad-free music and podcast player for Android. No account, no trackin
 - **Podcasts:** search any public show, follow it, stream or download episodes, resume where you left off, speed control, skip 15/30 seconds, sleep timer.
 - **Discover:** free legal music from the Internet Archive (Creative Commons, public domain, and live-taping friendly recordings) and Jamendo (independent artists), plus internet radio by language. Save any track to your library for offline listening.
 - **Google Drive:** connect a Drive folder in Settings and stream your music without using phone storage. Save songs, albums, or playlists offline when you want them without internet. Isai can only read your Drive, never change it.
-- **Profiles:** "Who's listening?" on launch, with Captain and Donna. Each profile keeps its own songs, playlists, likes, podcasts, and history. Rename, change avatar, or clear a profile from Manage profiles.
 - **Listen together:** one phone starts a session and shares a code, the other joins. Play, pause, skip, and seek stay in sync on both phones. Podcasts, radio, and Discover music play on both; your own songs play when both phones have the same song.
 - Lock-screen and headphone controls, works offline, installs to the home screen.
 
@@ -31,7 +30,7 @@ Keep the original files as a backup. Clearing Chrome's site data removes Isai's 
 
 ## Listen together
 
-1. Both phones open Isai and pick their profile.
+1. Both phones open Isai. Connect the same Google Drive on both, so they share the same songs.
 2. One person taps the **Listen together** icon on Home (two people) and taps **Start a session**.
 3. Share the code (like `RAGA-7KX2QM`). The other person taps **Listen together**, enters the code, and taps **Join**.
 4. Whoever presses play, pause, skip, or seeks becomes the one choosing. Tap the heart in the top banner to send a heart.

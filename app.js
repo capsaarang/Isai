@@ -1,7 +1,7 @@
 'use strict';
 /* Isai: personal music and podcast player. All data stays on this device. */
 
-const VERSION = '1.4.0';
+const VERSION = '1.5.0';
 const DEFAULT_JAMENDO = '339d4597';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -572,15 +572,16 @@ function continueEpisodes() {
 const Views = {};
 
 Views.home = () => {
-  let h = `<div class="topbar" style="margin-bottom:6px"><button class="me-btn" data-a="switch-profile" aria-label="Switch profile">${avatarHTML(ME, 34)}</button><span style="flex:1"></span>
+  let h = `<div class="topbar" style="margin-bottom:6px"><span style="flex:1"></span>
     <button class="iconbtn" data-a="together" aria-label="Listen together">${icon('users')}</button>
     <button class="iconbtn" data-a="import" aria-label="Add songs">${icon('upload')}</button>
     <button class="iconbtn" data-a="go" data-v="settings" aria-label="Settings">${icon('gear')}</button></div>
     <h1 class="welcome">Welcome to the world of Isai</h1>`;
   if (!S.tracks.length && !S.podcasts.length && !S.recent.length) {
-    return h + emptyHTML('music', 'Let\'s get started', 'Add songs from your Rajan folder, follow podcasts, or explore free music and radio.',
+    return h + emptyHTML('music', 'Let\'s get started', 'Stream your music from Google Drive, follow podcasts, or explore free music and radio.',
       `<div style="display:flex;flex-direction:column;gap:10px;align-items:center">
-        <button class="btn primary" data-a="import">${icon('upload', 'sm')} Add songs</button>
+        <button class="btn primary" data-a="${Drive.connected() ? 'drive-scan' : 'drive-connect'}">${icon('cloud', 'sm')} ${Drive.connected() ? 'Scan Google Drive' : 'Connect Google Drive'}</button>
+        <button class="btn ghost" data-a="import">${icon('upload', 'sm')} Add from this phone</button>
         <button class="btn ghost" data-a="tab" data-t="podcasts">${icon('mic', 'sm')} Find podcasts</button>
         <button class="btn ghost" data-a="tab" data-t="discover">${icon('compass', 'sm')} Discover free music</button></div>`);
   }
@@ -1050,6 +1051,8 @@ Views.settings = async () => {
       <div class="field"><label for="s-relay">Podcast relay URL (optional)</label><input id="s-relay" value="${esc(S.settings.relay)}" placeholder="https://isai-relay.yourname.workers.dev" autocomplete="off" spellcheck="false" inputmode="url"></div>
       <button class="btn primary" type="submit">Save</button>
     </form>
+    <div class="section-title">This phone</div>
+    <div class="setting-row"><span>Name in Listen together</span><button class="acc" data-a="rename-phone">${esc(DeviceName.get())}</button></div>
     <div class="section-title">Google Drive</div>
     ${Drive.connected() ? `
       <div class="setting-row"><span>Account</span><span class="muted ellipsis" style="max-width:60%">${esc(S.settings.gdrive.email)}</span></div>
@@ -1318,7 +1321,12 @@ const A = {
     S.epDl = {}; await saveKV.epDl(); toast('Downloads deleted'); rerenderKeepScroll();
   },
   'clear-recent': async () => { S.recent = []; await saveKV.recent(); toast('Cleared'); },
-  'switch-profile': () => switchProfile(),
+  'rename-phone': () => {
+    const n = (prompt("This phone's name", DeviceName.get()) || '').trim().slice(0, 24);
+    if (!n) return;
+    DeviceName.set(n); toast('Name updated', 1400); rerenderKeepScroll();
+    if (Together.connected()) Together.send(Together.helloMsg());
+  },
   'drive-connect': d => Drive.connect(d.p && typeof d.p === 'string' ? d.p : 'setup'),
   'drive-scan': () => { if (!Drive.connected()) return Drive.connect('setup'); if (!S.settings.gdrive.folderId) return driveFolderSheet(); driveScan(); },
   'drive-folder': () => driveFolderSheet(),
@@ -1442,6 +1450,15 @@ document.addEventListener('keydown', e => {
   else if (e.key === 'ArrowLeft' && e.shiftKey) Player.prev();
 });
 document.addEventListener('visibilitychange', () => { if (document.hidden) saveState(); });
+
+/* ---------- this phone's name ---------- */
+const DeviceName = {
+  get() {
+    try { const n = localStorage.getItem('isai-device-name'); if (n) return n; } catch { }
+    return /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) ? 'Phone 2' : 'Phone 1';
+  },
+  set(n) { try { localStorage.setItem('isai-device-name', n); } catch { } },
+};
 
 /* ---------- google drive ---------- */
 const GDRIVE_CLIENT_ID = '59416505369-4iqnmjv8pgsvahurv8r6mvon8g2g7ljh.apps.googleusercontent.com';
@@ -1595,17 +1612,17 @@ function driveAuthSheet(pending = 'play') {
     <button class="btn primary" style="width:100%" data-a="drive-connect" data-p="${esc(pending)}">Reconnect</button>`);
 }
 let scanning = false;
-async function driveScan() {
+async function driveScan(quiet = false) {
   const g = S.settings.gdrive;
   if (!g || !g.folderId || scanning) return;
-  if (!Drive.token()) return driveAuthSheet('scan');
+  if (!Drive.token()) { if (!quiet) driveAuthSheet('scan'); return; }
   scanning = true;
+  let added = 0, removed = 0;
   try {
-    toast(`Looking in "${g.folderName}"…`, 0);
-    const files = await Drive.listAudio(g.folderId, n => toast(`Found ${n} songs…`, 0));
+    if (!quiet) toast(`Looking in "${g.folderName}"…`, 0);
+    const files = await Drive.listAudio(g.folderId, n => { if (!quiet) toast(`Found ${n} songs…`, 0); });
     const existing = new Map(S.tracks.filter(t => t.source === 'gdrive').map(t => [t.driveId, t]));
     const ids = new Set(files.map(f => f.id));
-    let removed = 0, added = 0;
     for (const t of existing.values()) if (!ids.has(t.driveId)) { await deleteTrack(t.id); removed++; }
     const todo = files.filter(f => !existing.has(f.id));
     for (let i = 0; i < todo.length; i++) {
@@ -1625,11 +1642,12 @@ async function driveScan() {
       if (i % 10 === 9) await sleep(0);
     }
     g.lastScan = Date.now(); await saveKV.settings();
-    toast(added || removed ? `Google Drive: ${added} added${removed ? `, ${removed} removed` : ''}` : 'Google Drive is up to date', 3000);
+    if (!quiet || added || removed) toast(added || removed ? `Google Drive: ${added} added${removed ? `, ${removed} removed` : ''}` : 'Google Drive is up to date', 3000);
   } catch (e) {
-    if (e.message === 'gdrive-auth') { toast('', 1); driveAuthSheet('scan'); }
+    if (quiet) { if (added) toast(`Google Drive: ${added} added`, 2500); }
+    else if (e.message === 'gdrive-auth') { toast('', 1); driveAuthSheet('scan'); }
     else toast("Couldn't finish reading Google Drive. Check your internet and try Scan again.", 3500);
-  } finally { scanning = false; rerenderKeepScroll(); }
+  } finally { scanning = false; if (!quiet || added || removed) rerenderKeepScroll(); }
 }
 async function saveOffline(t) {
   if (!t || t.source !== 'gdrive') return;
@@ -1890,9 +1908,9 @@ const Together = {
     if (d.t === 'hello') {
       const first = !this.partner;
       if (first) { this.partnerClient = d._f; clearInterval(this.helloTimer); clearTimeout(this.joinTimer); }
-      if (Array.isArray(d.profiles)) mergeProfiles(d.profiles);
       this.partnerId = d.id;
-      this.partner = PROFILES.find(p => p.id === d.id) || { name: String(d.name || 'Friend').slice(0, 30), avatar: d.avatar };
+      this.partner = { name: String(d.name || 'Other phone').slice(0, 24) };
+      if (!first) { updateTogetherBar(); refreshTogether(); }
       this.status = 'connected';
       if (first) {
         this.send(this.helloMsg());
@@ -1900,20 +1918,20 @@ const Together = {
         this.syncClock();
         if (this.role === 'host') setTimeout(() => { if (Player.cur) this.broadcast(); }, 1200);
         clearInterval(this.hb); clearInterval(this.beat); clearInterval(this.watch);
-        this.hb = setInterval(() => { if (this.connected() && this.controller === ME.name && !audio.paused) this.broadcast(); }, 4000);
+        this.hb = setInterval(() => { if (this.connected() && this.controller === DeviceName.get() && !audio.paused) this.broadcast(); }, 4000);
         this.beat = setInterval(() => { if (this.connected()) this.send({ t: 'beat' }); }, 8000);
         this.watch = setInterval(() => { if (this.connected() && Date.now() - this.lastSeen > 45000) this.onClose(true); }, 5000);
       }
       refreshTogether();
-    } else if (d.t === 'profiles') { if (Array.isArray(d.profiles)) mergeProfiles(d.profiles); }
+    }
     else if (d.t === 'ping') this.send({ t: 'pong', a: d.a, b: Date.now() });
     else if (d.t === 'pong') this.onPong(d);
     else if (d.t === 'state') this.applyRemote(d);
-    else if (d.t === 'react') { floatHeart(); toast(`${this.partner ? this.partner.name : 'They'} sent you a heart`, 1800); }
+    else if (d.t === 'react') { floatHeart(); toast(`${this.partner ? this.partner.name : 'The other phone'} sent a heart`, 1800); }
     else if (d.t === 'busy') { if (!this.connected()) this.fail('That session already has two people.'); }
     else if (d.t === 'bye') this.onClose();
   },
-  helloMsg() { return { t: 'hello', id: ME.id, name: ME.name, avatar: ME.avatar, profiles: PROFILES }; },
+  helloMsg() { return { t: 'hello', id: 'phone', name: DeviceName.get() }; },
   sendProfiles() { if (this.connected()) this.send({ t: 'profiles', profiles: PROFILES }); },
   samples: [],
   syncClock() {
@@ -1928,7 +1946,7 @@ const Together = {
   },
   wireItem(p) {
     if (!p) return null;
-    if (p.type === 'song') return { type: 'song', key: p.key, title: p.title, artist: p.artist, album: p.album, duration: p.duration };
+    if (p.type === 'song') { const t = trackById(p.id); return { type: 'song', key: p.key, title: p.title, artist: p.artist, album: p.album, duration: p.duration, driveId: t && t.driveId }; }
     const c = Object.assign({}, p); delete c.desc; return c;
   },
   lastApplied: null, lastStateAt: 0,
@@ -1948,13 +1966,14 @@ const Together = {
   broadcast() {
     if (!this.connected() || this.isSilent()) return;
     const p = Player.cur;
-    this.controller = ME.name; this.missing = null; this.lastApplied = null; this.lastStateAt = Date.now();
-    this.send({ t: 'state', item: this.wireItem(p), playing: !!p && !audio.paused, time: audio.currentTime || 0, at: Date.now(), by: ME.name });
+    this.controller = DeviceName.get(); this.missing = null; this.lastApplied = null; this.lastStateAt = Date.now();
+    this.send({ t: 'state', item: this.wireItem(p), playing: !!p && !audio.paused, time: audio.currentTime || 0, at: Date.now(), by: DeviceName.get() });
     updateTogetherBar();
   },
   resolve(item) {
     if (!item) return null;
     if (item.type !== 'song') return item;
+    if (item.driveId) { const d = S.tracks.find(x => x.driveId === item.driveId); if (d) return songP(d); }
     const norm = s => String(s || '').toLowerCase().normalize('NFKD').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
     const t = norm(item.title), a = norm(item.artist);
     let hit = S.tracks.find(x => norm(x.title) === t && norm(x.artist) === a);
@@ -2034,7 +2053,7 @@ function updateTogetherBar() {
   bar.classList.remove('hidden');
   const who = Together.partner.name;
   const ctl = Together.missing ? `${esc(who)} is playing a song you don't have` : Together.controller === ME.name ? "You're choosing" : Together.controller ? `${esc(Together.controller)} is choosing` : 'Connected';
-  bar.innerHTML = `<button class="tg-main" data-a="together">${avatarHTML(Together.partner, 26)}<span class="tg-text"><b>With ${esc(who)}</b><span>${ctl}</span></span></button>
+  bar.innerHTML = `<button class="tg-main" data-a="together">${`<span class="avatar tg-phone" style="width:26px;height:26px">${icon('phone', 'sm')}</span>`}<span class="tg-text"><b>With ${esc(who)}</b><span>${ctl}</span></span></button>
     <button class="iconbtn" data-a="tg-heart" aria-label="Send a heart"><span class="acc">${icon('heart-f', 'sm')}</span></button>`;
 }
 let sheetKind = '';
@@ -2044,7 +2063,7 @@ function renderTogetherSheet() {
   const T = Together;
   let h = `<div style="font-weight:700;font-size:18px;margin-bottom:4px">Listen together</div>`;
   if (T.connected()) {
-    h += `<div class="sheet-head" style="border:0;margin-top:8px">${avatarHTML(T.partner, 48)}<div><div style="font-weight:600">Listening with ${esc(T.partner.name)}</div><div class="muted" style="font-size:13px">Play, pause, skip, and seek stay in sync on both phones.</div></div></div>
+    h += `<div class="sheet-head" style="border:0;margin-top:8px">${`<span class="avatar tg-phone" style="width:48px;height:48px">${icon('phone', 'sm')}</span>`}<div><div style="font-weight:600">Listening with ${esc(T.partner.name)}</div><div class="muted" style="font-size:13px">Play, pause, skip, and seek stay in sync on both phones.</div></div></div>
       <button class="opt" data-a="tg-heart">${icon('heart-f')}Send a heart</button>
       <button class="opt danger" data-a="tg-leave">${icon('x')}Leave session</button>`;
   } else if (T.role === 'host') {
@@ -2066,12 +2085,29 @@ function renderTogetherSheet() {
 }
 
 /* ---------- boot ---------- */
+function cleanupOldProfiles() {
+  try {
+    if (localStorage.getItem('isai-single-profile')) return;
+    indexedDB.deleteDatabase('isai-donna');
+    localStorage.removeItem('isai-gtoken-donna');
+    localStorage.removeItem('isai-profiles');
+    localStorage.setItem('isai-single-profile', '1');
+  } catch { }
+}
+function showWelcome() {
+  const el = $('#picker');
+  el.classList.remove('hidden'); el.classList.add('welcome-splash');
+  el.innerHTML = `<div class="pk-inner">${LOGO_SVG.replace('width="48" height="48"', 'width="84" height="84"')}<h1>Welcome to the world of Isai</h1></div>`;
+  const hide = () => { el.classList.add('fade'); setTimeout(() => { el.classList.add('hidden'); el.classList.remove('fade', 'welcome-splash'); el.innerHTML = ''; }, 350); };
+  el.addEventListener('click', hide, { once: true });
+  setTimeout(hide, 1600);
+}
 function boot() {
   handleDriveRedirect();
-  let id = null;
-  try { id = sessionStorage.getItem('isai-profile'); } catch { }
-  if (id && PROFILES.some(p => p.id === id)) start(id);
-  else showPicker(false);
+  cleanupOldProfiles();
+  PROFILES = DEFAULT_PROFILES.slice(0, 1).map(x => ({ ...x }));
+  if (!drivePending) showWelcome();
+  start('captain');
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
     navigator.serviceWorker.register('sw.js').catch(() => { });
     let reloaded = false;
@@ -2103,6 +2139,7 @@ async function start(id) {
   }
   history.replaceState({ l: 0 }, '');
   if (drivePending) setTimeout(runDrivePending, 400);
+  else if (S.settings.gdrive && S.settings.gdrive.folderId && navigator.onLine) setTimeout(() => driveScan(true), 2500);
   render();
   updatePlayerUI();
 }
