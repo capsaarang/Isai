@@ -254,3 +254,4 @@ body.together-on #view{padding-top:64px}
 .recap-dots{display:flex;justify-content:center;gap:6px;margin:12px 0 4px}
 .recap-dots span{width:6px;height:6px;border-radius:50%;background:var(--muted);opacity:.5;transition:all .2s}
 .recap-dots span.on{width:18px;border-radius:3px;background:var(--acc);opacity:1}
+.lyr-credit{font-size:12px;color:#cbbba5;opacity:.7;padding:18px 0 0}

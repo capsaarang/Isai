@@ -1,7 +1,7 @@
 'use strict';
 /* Isai: personal music and podcast player. All data stays on this device. */
 
-const VERSION = '1.8.0';
+const VERSION = '1.8.1';
 const DEFAULT_JAMENDO = '339d4597';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -2125,22 +2125,23 @@ const Lyrics = {
     if (d && d.lrc) {
       this.lines = parseLRC(d.lrc);
       if (this.lines) {
-        box.innerHTML = '<div class="lyr-pad"></div>' + this.lines.map((l, i) => `<button class="lyr-line" data-i="${i}">${esc(l.text) || '♪'}</button>`).join('') + '<div class="lyr-pad"></div>';
+        box.innerHTML = '<div class="lyr-pad"></div>' + this.lines.map((l, i) => `<button class="lyr-line" data-i="${i}">${esc(l.text) || '♪'}</button>`).join('') + this.credit() + '<div class="lyr-pad"></div>';
         this.tick(true); return;
       }
     }
     const plain = d && (d.plain || (d.lrc && d.lrc.replace(/\[[^\]]*\]/g, '').trim()));
-    if (plain) { box.innerHTML = `<div class="lyr-plain">${esc(plain)}</div>`; return; }
+    if (plain) { box.innerHTML = `<div class="lyr-plain">${esc(plain)}</div>${this.credit()}`; return; }
+    if (d && d.instrumental) { box.innerHTML = `<div class="lyr-msg">${icon('lyrics', 'xl')}<div class="lyr-empty-t">Instrumental</div><div class="lyr-empty-s">This song has no words.</div></div>`; return; }
     const why = d && d.err === 'gdrive-auth' ? 'Google needs to reconnect before Isai can look in your Drive.'
       : d && d.err ? (navigator.onLine ? "Couldn't reach Google Drive just now." : "You're offline, so Isai can't look in your Drive right now.")
-      : `This song has no lyrics saved in it.${t.source === 'gdrive' ? ` To add some, put a file called <b>${esc((d && d.base) || 'song name')}.lrc</b> in the same Drive folder as the song.` : ''}`;
+      : `Couldn't find lyrics for this song.${t.source === 'gdrive' ? ` To add your own, put a file called <b>${esc((d && d.base) || 'song name')}.lrc</b> in the same Drive folder as the song.` : ''}${t.artist === 'Unknown artist' ? ' Songs with the right artist name are easier to find.' : ''}`;
     box.innerHTML = `<div class="lyr-msg">${icon('lyrics', 'xl')}<div class="lyr-empty-t">No lyrics yet</div><div class="lyr-empty-s">${why}</div><button class="btn small ghost" data-lyr="retry">Check again</button></div>`;
   },
   async get(t, force) {
     const ck = this.cacheKey(t);
     const cached = await KV.get(ck).catch(() => null);
-    if (cached && !force && (cached.lrc || cached.plain || Date.now() - (cached.at || 0) < 6 * 3600e3)) return cached;
-    const out = { at: Date.now() };
+    if (cached && cached.v === 2 && !force && (cached.lrc || cached.plain || cached.instrumental || Date.now() - (cached.at || 0) < 6 * 3600e3)) return cached;
+    const out = { at: Date.now(), v: 2 };
     // 1. a matching .lrc file in the same Drive folder
     if (t.source === 'gdrive' && Drive.token() && navigator.onLine) {
       const meta = await Drive.api('files/' + encodeURIComponent(t.driveId), { fields: 'name,parents' });
@@ -2164,9 +2165,35 @@ const Lyrics = {
       const txt = String((raw && typeof raw === 'object' ? raw.lyrics || raw.text : raw) || '').replace(/\r/g, '').trim();
       if (txt) { if (parseLRC(txt)) out.lrc = txt; else out.plain = txt; out.src = 'tag'; }
     }
+    // 3. look the song up in LRCLIB, a free public lyrics library
+    if (!out.lrc && !out.plain && navigator.onLine) {
+      const r = await this.lrclib(t).catch(() => null);
+      if (r) { if (r.syncedLyrics && parseLRC(r.syncedLyrics)) out.lrc = r.syncedLyrics; else if (r.plainLyrics) out.plain = r.plainLyrics; else if (r.instrumental) out.instrumental = true; out.src = 'lrclib'; }
+    }
     await KV.set(ck, out).catch(() => { });
     return out;
   },
+  async lrclib(t) {
+    const API = 'https://lrclib.net/api/';
+    const norm = x => String(x || '').toLowerCase().normalize('NFKD').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+    const title = String(t.title || '').replace(/\s*[([][^)\]]*\b(from|feat|ft|version|remaster(ed)?|lyrics?|official|audio|video|full song)\b[^)\]]*[)\]]/gi, '').replace(/\s+-\s+(from|feat|ft)\b.*$/i, '').trim();
+    const artist = t.artist && t.artist !== 'Unknown artist' ? t.artist.split(/\s*(?:,|&|\/|;|\bfeat\.?|\bft\.?|\bx\b)\s*/i)[0].trim() : '';
+    const dur = t.duration || (Player.cur && Player.cur.id === t.id && isFinite(audio.duration) ? audio.duration : 0);
+    const has = r => r && (r.syncedLyrics || r.plainLyrics || r.instrumental);
+    const get = async (path, params) => { const r = await fetch(API + path + '?' + new URLSearchParams(params)); return r.ok ? r.json() : null; };
+    if (!title) return null;
+    if (artist) {
+      const p = { track_name: title, artist_name: artist }; if (dur) p.duration = Math.round(dur);
+      const r = await get('get', p).catch(() => null); if (has(r)) return r;
+    }
+    let list = (await get('search', artist ? { track_name: title, artist_name: artist } : { q: title })) || [];
+    if (!list.length && artist) list = (await get('search', { q: title + ' ' + artist })) || [];
+    const nt = norm(title);
+    const ok = list.filter(x => (x.syncedLyrics || x.plainLyrics) && (norm(x.trackName).includes(nt) || nt.includes(norm(x.trackName))) && (!dur || !x.duration || Math.abs(x.duration - dur) < 6));
+    ok.sort((a, b) => (!!b.syncedLyrics - !!a.syncedLyrics) || (dur ? Math.abs(a.duration - dur) - Math.abs(b.duration - dur) : 0));
+    return ok[0] || null;
+  },
+  credit() { return this.data && this.data.src === 'lrclib' ? '<div class="lyr-credit">Lyrics from LRCLIB</div>' : ''; },
   tick(jump = false) {
     if (!this.on || !this.lines) return;
     const t = audio.currentTime + 0.25;
