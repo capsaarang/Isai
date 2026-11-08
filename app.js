@@ -1,7 +1,7 @@
 'use strict';
 /* Isai: personal music and podcast player. All data stays on this device. */
 
-const VERSION = '1.9.1';
+const VERSION = '1.9.2';
 const DEFAULT_JAMENDO = '339d4597';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -96,7 +96,7 @@ const S = {
   q: '',
   feedCache: {},
   plays: {}, stats: {}, meta: {}, others: {},
-  libSort: 'title', libFilter: '',
+  libSort: (() => { try { return localStorage.getItem('isai-lib-sort') || 'added'; } catch { return 'added'; } })(), libFilter: '',
 };
 const saveKV = {
   liked: () => KV.set('liked', [...S.liked]),
@@ -1433,7 +1433,7 @@ const A = {
   'fav-radio': d => { const p = listItem(d); if (p) toggleFav(p); },
   'dl-ep': d => { const p = listItem(d); if (!p) return; if (S.epDl[p.id]) itemSheet(p); else downloadEpisode(p); },
   libtab: d => { S.libTab = d.t; S.libFilter = ''; render(); },
-  'lib-sort': d => { S.libSort = d.t; const b = $('#lib-body'); if (b) { S.lists = {}; b.innerHTML = libBodyHTML(); hydrateArt(b); markPlayingRows(); } },
+  'lib-sort': d => { S.libSort = d.t; try { localStorage.setItem('isai-lib-sort', d.t); } catch { } const b = $('#lib-body'); if (b) { S.lists = {}; b.innerHTML = libBodyHTML(); hydrateArt(b); markPlayingRows(); } },
   'stats-month': d => { S.statsMonth = d.t; rerenderKeepScroll(); },
   'stats-scope': d => { Stats.setScope(d.t); render(); },
     podtab: d => { S.podTab = d.t; render(); },
@@ -1978,7 +1978,12 @@ async function driveScan(quiet = false) {
     g.lastScan = Date.now(); await saveKV.settings();
     if (added) Sync.soon(1000);
     Enrich.run();
-    if (!quiet || added || removed) toast(added || removed ? `Google Drive: ${added} added${removed ? `, ${removed} removed` : ''}${added ? '. Ready to play while song details load' : ''}` : 'Google Drive is up to date', added ? 4000 : 3000);
+    if (added) { g.lastAdded = { at: Date.now(), titles: S.tracks.slice(-added).map(t => t.title).slice(0, 3), n: added }; await saveKV.settings(); }
+    const la = g.lastAdded;
+    const recentNote = la && Date.now() - la.at < 30 * 60e3 ? ` Added a few minutes ago: ${la.titles.join(', ')}${la.n > 3 ? ` and ${la.n - 3} more` : ''}. Find it under Library, Recently added.` : '';
+    if (!quiet || added || removed) toast(!added && removed ? `Removed ${removed} song${removed === 1 ? '' : 's'} that ${removed === 1 ? 'is' : 'are'} no longer in Google Drive.` : added
+      ? `Added ${added === 1 ? `"${S.tracks[S.tracks.length - 1].title}"` : `${added} songs`} from Google Drive${removed ? `, removed ${removed}` : ''}. Find ${added === 1 ? 'it' : 'them'} under Library, Recently added.`
+      : `No new songs. ${files.length} songs in "${g.folderName}" (${g.email}).${recentNote}`, added || recentNote ? 6000 : 4500);
   } catch (e) {
     if (quiet) { if (added) toast(`Google Drive: ${added} added`, 2500); }
     else if (e.message === 'gdrive-auth') { toast('', 1); driveAuthSheet('scan'); }
