@@ -1,7 +1,7 @@
 'use strict';
 /* Isai: personal music and podcast player. All data stays on this device. */
 
-const VERSION = '1.9.2';
+const VERSION = '1.9.3';
 const DEFAULT_JAMENDO = '339d4597';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -1710,7 +1710,7 @@ const Drive = {
         const client = google.accounts.oauth2.initTokenClient({
           client_id: GDRIVE_CLIENT_ID, scope: GDRIVE_SCOPE, prompt: '',
           hint: S.settings.gdrive && S.settings.gdrive.email,
-          callback: r => { if (r && r.access_token) { this.saveToken(r.access_token, r.expires_in, r.scope); finish(true); } else finish(false); },
+          callback: r => { if (r && r.access_token) { this.saveToken(r.access_token, r.expires_in, r.scope); this.checkAccount().then(() => finish(true), e => { if (e.message === 'gdrive-wrong-account') toast(`Google picked ${e.got}. Isai needs ${S.settings.gdrive.email}. Tap Reconnect and choose that account.`, 6000); finish(false); }); } else finish(false); },
           error_callback: () => finish(false),
         });
         client.requestAccessToken({ prompt: '' });
@@ -1718,7 +1718,17 @@ const Drive = {
       setTimeout(() => finish(false), 45000);
     });
   },
-  clearToken() { try { localStorage.removeItem(this.tokKey()); } catch { } },
+  clearToken() { try { localStorage.removeItem(this.tokKey()); } catch { } this.checkedTok = null; },
+  checkedTok: null,
+  async checkAccount(force = false) {
+    // Google can hand back access for a different signed-in account. Never read Drive with the wrong one.
+    const want = S.settings.gdrive && S.settings.gdrive.email, tok = this.token();
+    if (!want || !tok || (!force && this.checkedTok === tok)) return true;
+    const me = await this.api('about', { fields: 'user(emailAddress)' });
+    const got = me.user && me.user.emailAddress;
+    if (got && got.toLowerCase() !== want.toLowerCase()) { this.clearToken(); const e = new Error('gdrive-wrong-account'); e.got = got; throw e; }
+    this.checkedTok = tok; return true;
+  },
   connected() { return !!(S.settings.gdrive && S.settings.gdrive.email); },
   connect(pending = 'setup') {
     const nonce = uid();
@@ -1959,10 +1969,16 @@ async function driveScan(quiet = false) {
   let added = 0, removed = 0;
   try {
     if (!quiet) toast(`Looking in "${g.folderName}"…`, 0);
+    await Drive.checkAccount(true);
+    const folder = await Drive.api('files/' + encodeURIComponent(g.folderId), { fields: 'id,name,trashed' }).catch(e => { if (e.message === 'gdrive-auth') throw e; return null; });
+    if (!folder || folder.trashed) throw new Error('gdrive-no-folder');
     const files = await Drive.listAudio(g.folderId, n => { if (!quiet) toast(`Found ${n} songs…`, 0); });
     const existing = new Map(S.tracks.filter(t => t.source === 'gdrive').map(t => [t.driveId, t]));
     const ids = new Set(files.map(f => f.id));
-    for (const t of existing.values()) if (!ids.has(t.driveId)) { await deleteTrack(t.id); removed++; }
+    const gone = [...existing.values()].filter(t => !ids.has(t.driveId));
+    // a big drop almost always means Drive answered for the wrong place, not that songs were deleted
+    if (gone.length && (files.length === 0 || (gone.length > 20 && gone.length > existing.size * 0.3))) throw new Error('gdrive-suspicious');
+    for (const t of gone) { await deleteTrack(t.id); removed++; }
     for (const f of files) { const t = existing.get(f.id); if (t && (t.folderName || null) !== (f.folderName || null)) { t.folderName = f.folderName || null; await DB.put('tracks', t.id, t); } }
     const hidden = new Set(g.hidden || []);
     const todo = files.filter(f => !existing.has(f.id) && !hidden.has(f.id));
@@ -1985,8 +2001,11 @@ async function driveScan(quiet = false) {
       ? `Added ${added === 1 ? `"${S.tracks[S.tracks.length - 1].title}"` : `${added} songs`} from Google Drive${removed ? `, removed ${removed}` : ''}. Find ${added === 1 ? 'it' : 'them'} under Library, Recently added.`
       : `No new songs. ${files.length} songs in "${g.folderName}" (${g.email}).${recentNote}`, added || recentNote ? 6000 : 4500);
   } catch (e) {
-    if (quiet) { if (added) toast(`Google Drive: ${added} added`, 2500); }
+    if (quiet && !/gdrive-(wrong-account|no-folder|suspicious)/.test(e.message)) { if (added) toast(`Google Drive: ${added} added`, 2500); }
     else if (e.message === 'gdrive-auth') { toast('', 1); driveAuthSheet('scan'); }
+    else if (e.message === 'gdrive-wrong-account') { toast(`Google gave access to ${e.got}, but your songs are in ${g.email}. Tap Reconnect and pick ${g.email}.`, 7000); driveAuthSheet('scan'); }
+    else if (e.message === 'gdrive-no-folder') toast(`Isai can't find the "${g.folderName}" folder in ${g.email}. Pick your music folder again in Settings, Google Drive.`, 6000);
+    else if (e.message === 'gdrive-suspicious') toast(`Google Drive showed far fewer songs than before, so Isai kept your library as it is. Check that your songs are still in "${g.folderName}" in ${g.email}, then Scan again.`, 7000);
     else toast("Couldn't finish reading Google Drive. Check your internet and try Scan again.", 3500);
   } finally { scanning = false; if (!quiet || added || removed) rerenderKeepScroll(); }
 }
