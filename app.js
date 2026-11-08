@@ -1,7 +1,7 @@
 'use strict';
 /* Isai: personal music and podcast player. All data stays on this device. */
 
-const VERSION = '1.9.0';
+const VERSION = '1.9.1';
 const DEFAULT_JAMENDO = '339d4597';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -1731,7 +1731,10 @@ const Drive = {
   },
   async api(path, params) {
     const t = this.token(); if (!t) throw new Error('gdrive-auth');
-    const r = await fetch('https://www.googleapis.com/drive/v3/' + path + (params ? '?' + new URLSearchParams(params) : ''), { headers: { Authorization: 'Bearer ' + t } });
+    const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 25000);
+    let r;
+    try { r = await fetch('https://www.googleapis.com/drive/v3/' + path + (params ? '?' + new URLSearchParams(params) : ''), { headers: { Authorization: 'Bearer ' + t }, signal: ctl.signal }); }
+    finally { clearTimeout(timer); }
     if (r.status === 401) { this.clearToken(); throw new Error('gdrive-auth'); }
     if (!r.ok) throw new Error('HTTP ' + r.status);
     return r.json();
@@ -1946,12 +1949,13 @@ const Enrich = {
     rerenderKeepScroll(); updatePlayerUI();
   },
 };
-let scanning = false;
+let scanning = false, scanStarted = 0;
 async function driveScan(quiet = false) {
   const g = S.settings.gdrive;
-  if (!g || !g.folderId || scanning) return;
+  if (!g || !g.folderId) return;
+  if (scanning && Date.now() - scanStarted < 90e3) { if (!quiet) toast('Already checking Google Drive. New songs will show up in a moment.', 3000); return; }
   if (!Drive.token()) { if (!quiet) driveAuthSheet('scan'); return; }
-  scanning = true;
+  scanning = true; scanStarted = Date.now();
   let added = 0, removed = 0;
   try {
     if (!quiet) toast(`Looking in "${g.folderName}"…`, 0);
