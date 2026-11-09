@@ -1,7 +1,7 @@
 'use strict';
 /* Isai: personal music and podcast player. All data stays on this device. */
 
-const VERSION = '1.9.3';
+const VERSION = '1.9.4';
 const DEFAULT_JAMENDO = '339d4597';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -2335,7 +2335,12 @@ const Sync = {
     try {
       const id = await this.find();
       let remote = null;
-      if (id) { try { remote = JSON.parse(await (await Drive.fileBlob(id)).text()); } catch (e) { if (e.message === 'gdrive-auth') throw e; remote = null; } }
+      if (id) {
+        // can't read the shared file right now: skip this round rather than write over the other phone's changes
+        let txt = null;
+        try { txt = await (await Drive.fileBlob(id)).text(); } catch (e) { if (e.message !== 'HTTP 404') throw e; this.fileId = null; }
+        if (txt != null) { try { remote = JSON.parse(txt); } catch { remote = null; } }
+      }
       const before = stateSig();
       const merged = remote && remote.v === 1 ? mergeDocs(remote, localDoc()) : localDoc();
       await applyDoc(merged);
