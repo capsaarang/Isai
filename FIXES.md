@@ -7,3 +7,6 @@
   Fix: only delete Isai's own old caches.
 - Version: 1.9.4 (cache isai-v1.9.4). Commit: f94d653
 - Also checked: Drive scan keeps the library when Drive returns an empty list, a much smaller list, a missing folder or a different account. Removals of up to 20 songs (or under 30%) still go through, by design.
+
+## 2026-11-16 (manual check)
+- No issues found. Re-tested Drive scan safety (empty list, wrong account, missing folder), new-song scan, lyrics (song tags and .lrc), recaps.
