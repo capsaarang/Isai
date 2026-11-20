@@ -1,7 +1,7 @@
 'use strict';
 /* Isai: personal music and podcast player. All data stays on this device. */
 
-const VERSION = '1.9.4';
+const VERSION = '1.10.0';
 const DEFAULT_JAMENDO = '339d4597';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -139,11 +139,19 @@ function artHTML(p, cls = '', px = 46, iconName = null) {
   const img = p.artUrl ? `<img src="${esc(p.artUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">` : '';
   return `<div class="art ${cls}" style="background:${bg};color:${fg};font-size:${Math.round(px * 0.34)}px" ${p.artId ? `data-art="${esc(p.artId)}"` : ''}>${inner}${img}</div>`;
 }
+async function loadArtInto(el) {
+  if (el.querySelector('img')) return;
+  const u = await artURL(el.dataset.art);
+  if (u && !el.querySelector('img')) { const i = new Image(); i.decoding = 'async'; i.src = u; i.alt = ''; el.appendChild(i); }
+}
+const artObserver = 'IntersectionObserver' in window ? new IntersectionObserver(es => {
+  for (const e of es) if (e.isIntersecting) { artObserver.unobserve(e.target); loadArtInto(e.target); }
+}, { rootMargin: '400px' }) : null;
 function hydrateArt(root = document) {
-  root.querySelectorAll('[data-art]').forEach(async el => {
+  root.querySelectorAll('[data-art]').forEach(el => {
     if (el.querySelector('img')) return;
-    const u = await artURL(el.dataset.art);
-    if (u && !el.querySelector('img')) { const i = new Image(); i.src = u; i.alt = ''; el.appendChild(i); }
+    // the big cover in the player and sheets load right away; list rows load as they come near the screen
+    if (artObserver && !el.closest('#np, .sheet, .hero, #mini')) artObserver.observe(el); else loadArtInto(el);
   });
 }
 
@@ -257,7 +265,20 @@ const Player = {
     if (auto && this.repeat === 'one' && this.cur.type !== 'radio') { audio.currentTime = 0; audio.play(); return; }
     if (this.idx < this.queue.length - 1) { this.idx++; this.load(true); }
     else if (this.repeat === 'all' && this.queue.length) { this.idx = 0; this.load(true); }
+    else if (this.cur.type === 'song' && S.settings.keepPlaying !== false && !Together.isFollower() && this.keepGoing()) { this.idx++; this.load(true); }
     else if (auto) { audio.pause(); updatePlayerUI(); }
+  },
+  keepGoing() {
+    // add songs like the last one (same artist, then same album or folder, then liked songs, then anything) so the music doesn't stop
+    const last = trackById(this.cur.id); if (!last) return false;
+    const recent = new Set(this.queue.slice(-60).map(p => p.id));
+    const pool = S.tracks.filter(t => !recent.has(t.id));
+    if (!pool.length) return false;
+    const score = t => (t.artist && t.artist === last.artist ? 4 : 0) + (t.album && t.album === last.album ? 2 : 0) + (t.folderName && t.folderName === last.folderName ? 2 : 0) + (S.liked.has(t.id) ? 1.5 : 0) + Math.random() * 2.5;
+    const add = pool.map(t => [t, score(t)]).sort((a, b) => b[1] - a[1]).slice(0, 10).map(x => Object.assign(songP(x[0]), { auto: true }));
+    this.queue.push(...add); saveState(); Together.queueChanged();
+    toast('Keeping the music going with similar songs', 2500);
+    return true;
   },
   prev() {
     if (!this.cur) return;
@@ -509,8 +530,8 @@ function rerenderKeepScroll() {
 /* ---------- list rendering helpers ---------- */
 function reg(items, ctx) { const id = 'l' + Object.keys(S.lists).length; S.lists[id] = { items, ctx }; return id; }
 function rowsHTML(items, ctx, opts = {}) {
-  const L = reg(items, ctx);
-  return `<div class="list">${items.map((p, i) => {
+  const L = reg(items, ctx), lo = opts.from || 0, hi = Math.min(items.length, opts.to == null ? items.length : opts.to);
+  const body = items.slice(lo, hi).map((p, k) => { const i = lo + k;
     const tr = p.type === 'song' ? trackById(p.id) : null;
     const mark = tr && tr.source === 'gdrive' ? (tr.offline ? `<span class="acc src-mark" title="Saved offline">${icon('check', 'sm')}</span>` : `<span class="dim src-mark" title="Google Drive">${icon('cloud', 'sm')}</span>`) : '';
     const sub = p.type === 'radio' ? esc(p.sub || 'Radio') : mark + esc(p.sub || '') + (opts.dur && p.duration ? ' · ' + fmt(p.duration) : '');
@@ -521,7 +542,8 @@ function rowsHTML(items, ctx, opts = {}) {
       ${artHTML(p, opts.round ? 'round' : '', 46, p.type === 'radio' && !p.artUrl ? 'radio' : null)}
       <div class="meta"><div class="t ellipsis">${esc(p.title)}</div><div class="s ellipsis">${p.type === 'song' && S.liked.has(p.id) ? `<span class="acc" style="margin-right:4px">${icon('heart-f', 'sm').replace('class="icon', 'style="width:12px;height:12px;vertical-align:-1px" class="icon')}</span>` : ''}${sub}</div></div>
     </button>${right}</div>`;
-  }).join('')}</div>`;
+  }).join('');
+  return opts.inner ? body : `<div class="list">${body}</div>`;
 }
 function epRowsHTML(items, ctx) {
   const L = reg(items, ctx);
@@ -624,6 +646,7 @@ Views.home = () => {
         <button class="btn ghost" data-a="tab" data-t="discover">${icon('compass', 'sm')} Discover free music</button></div>`);
   }
   const tiles = [`<button class="tile" data-a="go" data-v="playlist" data-p="liked">${artHTML({ title: 'Liked' }, '', 52, 'heart-f').replace(/background:[^;]+;color:[^;]+/, 'background:#EF9F27;color:#2b1700')}<span class="ellipsis">Liked songs</span></button>`,
+    `<button class="tile" data-a="go" data-v="stats" data-p="month">${artHTML({ title: 'Stats' }, '', 52, 'chart').replace(/background:[^;]+;color:[^;]+/, 'background:#9b8cff;color:#160f33')}<span class="ellipsis">Your stats</span></button>`,
     `<button class="tile" data-a="go" data-v="downloads">${artHTML({ title: 'Downloads' }, '', 52, 'download').replace(/background:[^;]+;color:[^;]+/, 'background:#85B7EB;color:#042C53')}<span class="ellipsis">Downloads</span></button>`];
   for (const pl of S.playlists.slice(0, 6)) tiles.push(`<button class="tile" data-a="go" data-v="playlist" data-p="${esc(pl.id)}">${artHTML(plCover(pl), '', 52)}<span class="ellipsis">${esc(pl.name)}</span></button>`);
   h += `<div class="tiles">${tiles.join('')}</div>`;
@@ -650,10 +673,18 @@ function plCover(pl) {
 Views.search = () => {
   return topbar('Search') + `<div class="search">${icon('search')}<input id="q" type="search" placeholder="Songs, artists, albums, episodes" value="${esc(S.q)}" autocomplete="off" enterkeyhint="search"></div><div id="results"></div>`;
 };
+function LSget(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } }
+function rememberSearch(q) {
+  q = String(q || '').trim(); if (q.length < 2) return;
+  const hist = [q, ...LSget('isai-searches', []).filter(x => x.toLowerCase() !== q.toLowerCase())].slice(0, 8);
+  try { localStorage.setItem('isai-searches', JSON.stringify(hist)); } catch { }
+}
+let searchSaveT;
 Views.search.after = () => {
   const inp = $('#q');
-  const run = () => { S.q = inp.value; renderSearchResults(); };
+  const run = () => { S.q = inp.value; renderSearchResults(); clearTimeout(searchSaveT); searchSaveT = setTimeout(() => { if ($('#results .row')) rememberSearch(S.q); }, 1500); };
   inp.addEventListener('input', run);
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') { rememberSearch(inp.value); inp.blur(); } });
   renderSearchResults();
 };
 function renderSearchResults() {
@@ -661,7 +692,8 @@ function renderSearchResults() {
   S.lists = {};
   const q = S.q.trim().toLowerCase();
   if (!q) {
-    box.innerHTML = `<div class="notice">Search looks through your songs, playlists, and podcast episodes. To find new music, use <b>Discover</b>. To find new shows, use <b>Podcasts</b>.</div>`;
+    const hist = LSget('isai-searches', []);
+    box.innerHTML = (hist.length ? `<div class="section-title" style="margin-top:4px">Recent searches <button data-a="search-clear">Clear</button></div><div class="chips" style="flex-wrap:wrap">${hist.map(x => `<button class="chip" data-a="search-again" data-q="${esc(x)}">${icon('history', 'sm')} ${esc(x)}</button>`).join('')}</div>` : '') + `<div class="notice">Search looks through your songs, playlists, and podcast episodes. To find new music, use <b>Discover</b>. To find new shows, use <b>Podcasts</b>.</div>`;
     return;
   }
   const has = s => String(s || '').toLowerCase().includes(q);
@@ -721,9 +753,25 @@ Views.library.after = () => {
   const inp = $('#lib-filter'); if (!inp) return;
   inp.addEventListener('input', () => {
     S.libFilter = inp.value; S.lists = {};
-    const b = $('#lib-body'); b.innerHTML = libBodyHTML(); hydrateArt(b); markPlayingRows();
+    const b = $('#lib-body'); b.innerHTML = libBodyHTML(); hydrateArt(b); markPlayingRows(); watchLibMore();
   });
+  watchLibMore();
 };
+const LIB_CHUNK = 80;
+let libMore = null, libMoreObs = null;
+function watchLibMore() {
+  if (libMoreObs) libMoreObs.disconnect();
+  const s = $('#lib-more'); if (!s || !libMore || !('IntersectionObserver' in window)) return;
+  libMoreObs = new IntersectionObserver(es => {
+    if (!es.some(e => e.isIntersecting) || !libMore) return;
+    const { items, next } = libMore, list = s.previousElementSibling;
+    const tmp = document.createElement('div'); tmp.innerHTML = rowsHTML(items, 'Your library', { dur: true, from: next, to: next + LIB_CHUNK, inner: true });
+    const added = [...tmp.children]; list.append(...added); added.forEach(r => hydrateArt(r));
+    libMore.next += LIB_CHUNK; markPlayingRows();
+    if (libMore.next >= items.length) { libMore = null; libMoreObs.disconnect(); s.remove(); }
+  }, { rootMargin: '800px' });
+  libMoreObs.observe(s);
+}
 function libBodyHTML() {
   let h = '';
   if (S.libTab === 'songs') {
@@ -731,7 +779,9 @@ function libBodyHTML() {
     h += `<div class="chips" style="margin-bottom:8px">${SORTS.map(([k, l]) => `<button class="chip ${S.libSort === k ? 'on' : ''}" data-a="lib-sort" data-t="${k}">${l}</button>`).join('')}</div>`;
     h += `<div class="enrich-line muted ${Enrich.line() ? '' : 'hidden'}">${esc(Enrich.line())}</div>`;
     h += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><span class="muted" style="font-size:13px">${list.length} song${list.length === 1 ? '' : 's'}</span><button class="btn small primary" data-a="shuffle-all">${icon('shuffle', 'sm')} Shuffle</button></div>`;
-    h += list.length ? rowsHTML(list.map(songP), 'Your library', { dur: true }) : emptyHTML('search', 'No matches', 'Try another word.');
+    const items = list.map(songP);
+    libMore = items.length > LIB_CHUNK ? { items, next: LIB_CHUNK } : null;
+    h += items.length ? rowsHTML(items, 'Your library', { dur: true, to: LIB_CHUNK }) + (libMore ? '<div id="lib-more" style="height:40px"></div>' : '') : emptyHTML('search', 'No matches', 'Try another word.');
   } else if (S.libTab === 'albums') {
     h += `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:14px">${albumsList().filter(a => matchFilter(a.name, a.artist)).map(a =>
       `<button class="card" style="width:auto" data-a="go" data-v="album" data-p="${esc(a.name)}">${artHTML({ title: a.name, artId: a.artId }, '', 140).replace('class="art ', 'style="width:100%;height:auto;aspect-ratio:1" class="art ')}<div class="t ellipsis">${esc(a.name)}</div><div class="s ellipsis">${esc(a.artist)}</div></button>`).join('')}</div>`;
@@ -1216,11 +1266,8 @@ Views.settings = async () => {
   try { const e = await navigator.storage.estimate(); est = `${(e.usage / 1048576).toFixed(0)} MB used`; } catch { }
   const persisted = navigator.storage && navigator.storage.persisted ? await navigator.storage.persisted().catch(() => false) : false;
   return topbar('Settings', { back: true }) + `
-    <form data-f="settings">
-      <div class="field"><label for="s-jam">Jamendo Client ID (for Indie artists)</label><input id="s-jam" value="${esc(S.settings.jamendo)}" placeholder="a1b2c3d4" autocomplete="off" spellcheck="false"></div>
-      <div class="field"><label for="s-relay">Podcast relay URL (optional)</label><input id="s-relay" value="${esc(S.settings.relay)}" placeholder="https://isai-relay.yourname.workers.dev" autocomplete="off" spellcheck="false" inputmode="url"></div>
-      <button class="btn primary" type="submit">Save</button>
-    </form>
+    <div class="section-title">Playback</div>
+    <div class="setting-row"><span>Keep playing similar songs when the queue ends</span><button class="toggle ${S.settings.keepPlaying === false ? '' : 'on'}" data-a="keep-playing" aria-label="Keep playing"></button></div>
     <div class="section-title">This phone</div>
     <div class="setting-row"><span>Name in Listen together</span><button class="acc" data-a="rename-phone">${esc(DeviceName.get())}</button></div>
     <div class="section-title">Google Drive</div>
@@ -1261,6 +1308,14 @@ Views.settings = async () => {
       <button class="btn small ghost" data-a="clear-dl">${icon('trash', 'sm')} Delete all downloads</button>
       <button class="btn small ghost" data-a="clear-recent">Clear recently played</button>
     </div>
+    <details class="adv"><summary>Advanced</summary>
+      <p class="muted" style="font-size:13px;margin:6px 0 12px">Only needed for Indie artists in Discover, and for podcasts that block apps.</p>
+    <form data-f="settings">
+      <div class="field"><label for="s-jam">Jamendo Client ID (for Indie artists)</label><input id="s-jam" value="${esc(S.settings.jamendo)}" placeholder="a1b2c3d4" autocomplete="off" spellcheck="false"></div>
+      <div class="field"><label for="s-relay">Podcast relay URL (optional)</label><input id="s-relay" value="${esc(S.settings.relay)}" placeholder="https://isai-relay.yourname.workers.dev" autocomplete="off" spellcheck="false" inputmode="url"></div>
+      <button class="btn primary" type="submit">Save</button>
+    </form>
+    </details>
     <div class="section-title">About</div>
     <p class="muted" style="font-size:13px">Isai ${VERSION}. No ads, no tracking, no account. Your songs, playlists, and podcasts are stored only on this phone.</p>`;
 };
@@ -1343,7 +1398,7 @@ function itemSheet(p, plId) {
     if (t && t.source === 'gdrive') h += t.offline ? opt('s-unoffline', 'trash', 'Remove offline copy') : opt('s-offline', 'download', 'Save offline');
     h += opt('s-addpl', 'plus', 'Add to playlist');
     h += opt('s-like', S.liked.has(p.id) ? 'heart-f' : 'heart', S.liked.has(p.id) ? 'Remove from liked songs' : 'Add to liked songs');
-    if (t) { h += opt('s-album', 'album', 'Go to album') + opt('s-artist', 'user', 'Go to artist'); }
+    if (t) { h += opt('s-album', 'album', 'Go to album') + opt('s-artist', 'user', 'Go to artist') + opt('s-edit', 'edit', 'Edit song details'); }
     if (plId && plId !== 'liked') h += opt('s-unpl', 'x', 'Remove from this playlist', `data-p="${esc(plId)}"`);
     h += opt('s-delete', 'trash', t && t.source === 'gdrive' ? 'Hide from Isai (stays in Drive)' : 'Remove from library', '', 'danger');
   } else if (p.type === 'remote') {
@@ -1378,7 +1433,7 @@ function queueSheet() {
   }
   const q = Player.queue, i = Player.idx;
   if (!q.length) { openSheet(emptyHTML('list', 'Queue is empty', 'Play something to start a queue.')); return; }
-  const row = (p, j) => `<div class="qrow ${j === i ? 'now' : ''}"><button style="display:flex;gap:10px;align-items:center;flex:1;min-width:0;text-align:left" data-a="q-jump" data-i="${j}">${artHTML(p, '', 40).replace('class="art ', 'style="width:40px;height:40px" class="art ')}<div class="meta"><div class="t ellipsis">${esc(p.title)}</div><div class="s ellipsis">${esc(p.sub || '')}</div></div></button>${j !== i ? `<button class="iconbtn" data-a="q-remove" data-i="${j}" aria-label="Remove">${icon('x', 'sm')}</button>` : ''}</div>`;
+  const row = (p, j) => `<div class="qrow ${j === i ? 'now' : ''}"><button style="display:flex;gap:10px;align-items:center;flex:1;min-width:0;text-align:left" data-a="q-jump" data-i="${j}">${artHTML(p, '', 40).replace('class="art ', 'style="width:40px;height:40px" class="art ')}<div class="meta"><div class="t ellipsis">${esc(p.title)}</div><div class="s ellipsis">${esc(p.sub || '')}</div></div></button>${j !== i ? `<button class="iconbtn" data-a="q-move" data-i="${j}" data-d="-1" aria-label="Move up" ${j === i + 1 ? 'disabled style="opacity:.25"' : ''}>${icon('up', 'sm')}</button><button class="iconbtn" data-a="q-move" data-i="${j}" data-d="1" aria-label="Move down" ${j === q.length - 1 ? 'disabled style="opacity:.25"' : ''}>${icon('down', 'sm')}</button><button class="iconbtn" data-a="q-remove" data-i="${j}" aria-label="Remove">${icon('x', 'sm')}</button>` : ''}</div>`;
   let h = `<div style="font-weight:700;font-size:17px;margin-bottom:8px">Now playing</div>${row(q[i], i)}`;
   const next = q.slice(i + 1);
   if (next.length) h += `<div style="display:flex;justify-content:space-between;align-items:center;margin:16px 0 6px"><span style="font-weight:700;font-size:17px">Next up</span><button class="btn small ghost" data-a="q-clear">Clear</button></div>` + next.map((p, k) => row(p, i + 1 + k)).join('');
@@ -1478,6 +1533,24 @@ const A = {
   },
   'pl-new-add': async () => { const pl = await newPlaylist(sheetItem.id); if (pl) toast('Added to ' + pl.name); closeSheet(); },
   's-like': async () => { await toggleLike(sheetItem.id); closeSheet(); },
+  's-edit': () => {
+    const t = trackById(sheetItem.id); if (!t) return;
+    const f = (id, label, v) => `<div class="field"><label for="${id}">${label}</label><input id="${id}" value="${esc(v || '')}" autocomplete="off"></div>`;
+    openSheet(`<div style="font-weight:700;font-size:17px;margin-bottom:10px">Edit song details</div>
+      ${f('e-title', 'Title', t.title)}${f('e-artist', 'Artist', t.artist === 'Unknown artist' ? '' : t.artist)}${f('e-album', 'Album', t.album === 'Unknown album' ? '' : t.album)}
+      <p class="dim" style="font-size:12px;margin:-4px 0 12px">Changes are saved in Isai on this phone. The file in Drive stays as it is.</p>
+      <div style="display:flex;gap:10px"><button class="btn primary" data-a="s-edit-save" data-id="${esc(t.id)}">Save</button><button class="btn ghost" data-a="close-sheet">Cancel</button></div>`);
+    setTimeout(() => $('#e-title') && $('#e-title').focus(), 50);
+  },
+  's-edit-save': async d => {
+    const t = trackById(d.id); if (!t) return;
+    const title = $('#e-title').value.trim(), artist = $('#e-artist').value.trim(), album = $('#e-album').value.trim();
+    if (!title) { toast('Title can\'t be empty'); return; }
+    Object.assign(t, { title, artist: artist || 'Unknown artist', album: album || 'Unknown album', edited: true, tagged: true });
+    await DB.put('tracks', t.id, t);
+    if (Player.cur && Player.cur.id === t.id) Object.assign(Player.cur, songP(t));
+    closeSheet(); updatePlayerUI(); rerenderKeepScroll(); toast('Song details saved');
+  },
   's-album': () => { const a = sheetItem.album; closeSheet(); setTimeout(() => go('album', a), 60); },
   's-artist': () => { const a = sheetItem.artist; closeSheet(); setTimeout(() => go('artist', a), 60); },
   's-unpl': async d => { const pl = S.playlists.find(p => p.id === d.p); pl.ids = pl.ids.filter(x => x !== sheetItem.id); const sk = songKeyOf(trackById(sheetItem.id)); pl.extraKeys = (pl.extraKeys || []).filter(k => k !== sk); plTouch(pl); await saveKV.playlists(); closeSheet(); setTimeout(rerenderKeepScroll, 60); },
@@ -1500,6 +1573,16 @@ const A = {
   's-show': () => { const id = sheetItem.podId; closeSheet(); if (!S.podcasts.some(p => p.id === id) && !S.feedCache[id]) { toast('Show not followed'); return; } setTimeout(() => go('show', id), 60); },
   's-fav': () => { toggleFav(sheetItem); closeSheet(); },
   'q-jump': d => { Player.idx = +d.i; Player.load(true); closeSheet(); },
+  'search-again': d => { const inp = $('#q'); if (!inp) return; inp.value = d.q; S.q = d.q; renderSearchResults(); rememberSearch(d.q); },
+  'search-clear': () => { try { localStorage.removeItem('isai-searches'); } catch { } renderSearchResults(); },
+  'q-move': d => {
+    const j = +d.i, k = j + +d.d, q = Player.queue;
+    if (k <= Player.idx || k >= q.length) return;
+    [q[j], q[k]] = [q[k], q[j]]; saveState(); Together.queueChanged();
+    const y = $('#sheet') ? $('#sheet').scrollTop : 0; queueSheet(); if ($('#sheet')) $('#sheet').scrollTop = y;
+  },
+  'close-sheet': () => closeSheet(),
+  'keep-playing': () => { S.settings.keepPlaying = S.settings.keepPlaying === false; saveKV.settings(); rerenderKeepScroll(); },
   'q-remove': d => { const j = +d.i; Player.queue.splice(j, 1); if (j < Player.idx) Player.idx--; saveState(); Together.queueChanged(); queueSheet(); },
   'q-clear': () => { Player.queue = Player.queue.slice(0, Player.idx + 1); Player.original = null; saveState(); Together.queueChanged(); queueSheet(); },
   sleep: d => {

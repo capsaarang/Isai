@@ -10,3 +10,13 @@
 
 ## 2026-11-16 (manual check)
 - No issues found. Re-tested Drive scan safety (empty list, wrong account, missing folder), new-song scan, lyrics (song tags and .lrc), recaps.
+
+## 2026-11-20 (usability improvements, 1.10.0)
+- Settings: everyday settings first; Jamendo Client ID and podcast relay moved under Advanced.
+- Added: keep playing similar songs when the queue ends (same artist, album or folder, then liked songs). Can be turned off in Settings, Playback.
+- Added: move songs up and down in the queue.
+- Added: Edit song details (title, artist, album) from a song's menu. Saved on this phone; the Drive file is unchanged; a rescan keeps the edit.
+- Added: Your stats tile on Home.
+- Added: recent searches on the Search screen.
+- Faster Library: long song lists build in chunks as you scroll, and covers load only as they come on screen.
+- Re-tested: Drive scan safety, new-song scan, lyrics, recaps. All passed.
